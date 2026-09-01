@@ -311,7 +311,7 @@ func checkLicense(cfg Config) error {
 		return fmt.Errorf("licence non active : %s", res.Status)
 	}
 
-	expires := res.Data.ExpiresAt
+	expires := res.Data.ActivationUntil
 	if expires == "" {
 		expires = "illimité"
 	}

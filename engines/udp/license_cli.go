@@ -139,8 +139,6 @@ func licenseCreate(args []string) error {
 	fs := flag.NewFlagSet("create", flag.ContinueOnError)
 	registry := registryFlag(fs)
 	id := fs.String("id", "", "identifiant de la licence (obligatoire)")
-	days := fs.Int("days", 0, "durée après activation en jours (0 = illimité)")
-	maxUsers := fs.Int("max-users", 10, "nombre maximum de comptes clients")
 	comment := fs.String("comment", "", "commentaire libre")
 	out := fs.String("out", "", "écrire le jeton dans un fichier")
 	if err := fs.Parse(args); err != nil {
@@ -151,7 +149,7 @@ func licenseCreate(args []string) error {
 		return fmt.Errorf("-id est obligatoire")
 	}
 
-	token, lic, err := CreateLicense(*id, *days, *maxUsers, *comment)
+	token, lic, err := CreateLicense(*id, *comment)
 	if err != nil {
 		return err
 	}
@@ -171,7 +169,7 @@ func licenseCreate(args []string) error {
 		}
 	}
 
-	expires := lic.Data.ExpiresAt
+	expires := lic.Data.ActivationUntil
 	if expires == "" {
 		expires = "illimité"
 	}
@@ -182,7 +180,6 @@ func licenseCreate(args []string) error {
 	fmt.Printf("  Produit     : %s\n", lic.Data.Product)
 	fmt.Printf("  Émise le    : %s\n", lic.Data.IssuedAt)
 	fmt.Printf("  Expire le   : %s\n", expires)
-	fmt.Printf("  Max comptes : %d\n", lic.Data.MaxUsers)
 	fmt.Printf("  Activation avant : %s\n", lic.Data.ActivationUntil)
 	fmt.Printf("  État        : %s\n", LicenseNew)
 	if *out != "" {
@@ -243,7 +240,7 @@ func licenseList(args []string) error {
 	fmt.Println(strings.Repeat("-", 78))
 
 	for _, e := range entries {
-		exp := e.ExpiresAt
+		exp := e.ActivationUntil
 		if exp == "" {
 			exp = "illimité"
 		}
@@ -252,7 +249,7 @@ func licenseList(args []string) error {
 			act = "-"
 		}
 		fmt.Printf("%-16s %-10s %-22s %-8d %s\n",
-			e.ID, e.Status, exp, e.MaxUsers, act)
+			e.ID, e.Status, exp, 0, act)
 	}
 
 	return nil
@@ -333,7 +330,7 @@ func licenseActivate(args []string) error {
 		}
 	}
 
-	expires := res.Data.ExpiresAt
+	expires := res.Data.ActivationUntil
 	if expires == "" {
 		expires = "illimité"
 	}
@@ -343,7 +340,6 @@ func licenseActivate(args []string) error {
 	fmt.Printf("  Licence     : %s\n", res.Data.ID)
 	fmt.Printf("  Produit     : %s\n", res.Data.Product)
 	fmt.Printf("  Expire le   : %s\n", expires)
-	fmt.Printf("  Max comptes : %d\n", res.Data.MaxUsers)
 	fmt.Printf("  Activée le  : %s\n", res.Record.ActivatedAt)
 	fmt.Printf("  Installation: %s…\n", res.Record.MachineID[:16])
 	return nil
@@ -385,7 +381,7 @@ func licenseStatus(args []string) error {
 		return err
 	}
 
-	expires := res.Data.ExpiresAt
+	expires := res.Data.ActivationUntil
 	if expires == "" {
 		expires = "illimité"
 	}
@@ -395,7 +391,6 @@ func licenseStatus(args []string) error {
 	fmt.Printf("  Licence     : %s\n", res.Data.ID)
 	fmt.Printf("  État        : %s\n", res.Status)
 	fmt.Printf("  Expire le   : %s\n", expires)
-	fmt.Printf("  Max comptes : %d\n", res.Data.MaxUsers)
 	fmt.Printf("  Activée le  : %s\n", res.Record.ActivatedAt)
 	return nil
 }
@@ -415,7 +410,7 @@ func licenseVerify(args []string) error {
 
 	data, status, verifyErr := VerifyLicenseToken(tok)
 
-	expires := data.ExpiresAt
+	expires := data.ActivationUntil
 	if expires == "" {
 		expires = "illimité"
 	}
@@ -424,7 +419,6 @@ func licenseVerify(args []string) error {
 	fmt.Printf("  Produit     : %s\n", data.Product)
 	fmt.Printf("  Émise le    : %s\n", data.IssuedAt)
 	fmt.Printf("  Expire le   : %s\n", expires)
-	fmt.Printf("  Max comptes : %d\n", data.MaxUsers)
 	fmt.Printf("  Statut      : %s\n", status)
 	fmt.Println()
 

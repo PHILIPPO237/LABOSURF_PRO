@@ -26,3 +26,8 @@ dist/
 
 # Configuration locale contenant potentiellement des secrets
 engines/udp/config.json
+
+# Donnees locales de test
+engines/udp/labosurf_test
+engines/udp/licenses.json
+engines/udp/runtime/

@@ -201,6 +201,16 @@ func (as *ActivationStore) Activate(token string, registry *LicenseRegistry) (Ac
 		return ActivationResult{Status: status, Data: data}, err
 	}
 
+	// Fenêtre d'activation de 3 heures : elle ne s'applique
+	// qu'au premier enregistrement de l'activation.
+	deadline, err := time.Parse(time.RFC3339, data.ActivationUntil)
+	if err != nil {
+		return ActivationResult{Status: LicenseExpired, Data: data}, ErrLicenseExpired
+	}
+	if time.Now().UTC().After(deadline) {
+		return ActivationResult{Status: LicenseExpired, Data: data}, ErrLicenseExpired
+	}
+
 	// Révocation : contrôlée si le registre administrateur est disponible.
 	if registry != nil && registry.IsRevoked(data.ID) {
 		return ActivationResult{Status: LicenseRevoked, Data: data}, ErrLicenseRevoked
@@ -330,16 +340,16 @@ func (as *ActivationStore) Deactivate() error {
 
 // RegistryEntry est l'état d'une licence émise, côté administrateur.
 type RegistryEntry struct {
-	ID          string        `json:"id"`
-	IssuedAt    string        `json:"issued_at"`
-	ExpiresAt   string        `json:"expires_at"`
-	MaxUsers    int           `json:"max_users"`
-	Comment     string        `json:"comment,omitempty"`
-	Status      LicenseStatus `json:"status"`
-	Token       string        `json:"token"`
-	ActivatedAt string        `json:"activated_at,omitempty"`
-	ActivatedBy string        `json:"activated_by,omitempty"`
-	RevokedAt   string        `json:"revoked_at,omitempty"`
+	ID              string        `json:"id"`
+	IssuedAt        string        `json:"issued_at"`
+	ActivationUntil string        `json:"activation_until"`
+	Product         string        `json:"product"`
+	Comment         string        `json:"comment,omitempty"`
+	Status          LicenseStatus `json:"status"`
+	Token           string        `json:"token"`
+	ActivatedAt     string        `json:"activated_at,omitempty"`
+	ActivatedBy     string        `json:"activated_by,omitempty"`
+	RevokedAt       string        `json:"revoked_at,omitempty"`
 }
 
 type registryData struct {
@@ -405,13 +415,13 @@ func (r *LicenseRegistry) Add(data LicenseData, token string) error {
 	}
 
 	entry := &RegistryEntry{
-		ID:        data.ID,
-		IssuedAt:  data.IssuedAt,
-		ExpiresAt: data.ExpiresAt,
-		MaxUsers:  data.MaxUsers,
-		Comment:   data.Comment,
-		Status:    LicenseNew,
-		Token:     token,
+		ID:              data.ID,
+		IssuedAt:        data.IssuedAt,
+		ActivationUntil: data.ActivationUntil,
+		Product:         data.Product,
+		Comment:         data.Comment,
+		Status:          LicenseNew,
+		Token:           token,
 	}
 
 	r.data.Licenses[data.ID] = entry

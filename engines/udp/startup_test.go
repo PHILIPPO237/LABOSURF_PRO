@@ -15,11 +15,11 @@ func signExpiredToken(t *testing.T, id string) string {
 	t.Helper()
 
 	data := LicenseData{
-		ID:        id,
-		IssuedAt:  time.Now().UTC().Add(-60 * 24 * time.Hour).Format(time.RFC3339),
-		ExpiresAt: time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339),
-		Product:   "LABOSURF PRO",
-		MaxUsers:  5,
+		ID:              id,
+		Key:             "LABOSURFEXPIRED_TEST_KEY_123456789012345",
+		IssuedAt:        time.Now().UTC().Add(-4 * time.Hour).Format(time.RFC3339),
+		ActivationUntil: time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339),
+		Product:         "LABOSURF PRO",
 	}
 
 	payload, err := canonicalPayload(data)
@@ -68,7 +68,7 @@ func TestStartupAllowedWithValidLicense(t *testing.T) {
 	dir := t.TempDir()
 	cfg := makeLicenseConfig(dir)
 
-	token, _, err := CreateLicense("STARTUP-OK", 30, 5, "")
+	token, _, err := CreateLicense("STARTUP-OK", "")
 	if err != nil {
 		t.Fatalf("CreateLicense : %v", err)
 	}
@@ -92,7 +92,7 @@ func TestStartupRefusedAfterRevocation(t *testing.T) {
 	dir := t.TempDir()
 	cfg := makeLicenseConfig(dir)
 
-	token, lic, err := CreateLicense("STARTUP-REVOKE", 30, 5, "")
+	token, lic, err := CreateLicense("STARTUP-REVOKE", "")
 	if err != nil {
 		t.Fatalf("CreateLicense : %v", err)
 	}
@@ -156,7 +156,7 @@ func TestActivationMultiMachineRefused(t *testing.T) {
 	dir := t.TempDir()
 	regPath := filepath.Join(dir, "licenses.json")
 
-	token, lic, err := CreateLicense("MULTI", 30, 5, "")
+	token, lic, err := CreateLicense("MULTI", "")
 	if err != nil {
 		t.Fatalf("CreateLicense : %v", err)
 	}
@@ -196,7 +196,7 @@ func TestActivationWrongDeviceRefused(t *testing.T) {
 	actPath := filepath.Join(dir, "activation.json")
 	machPath := filepath.Join(dir, "machine.id")
 
-	token, _, err := CreateLicense("WRONGDEV", 30, 5, "")
+	token, _, err := CreateLicense("WRONGDEV", "")
 	if err != nil {
 		t.Fatalf("CreateLicense : %v", err)
 	}
@@ -224,17 +224,24 @@ func TestActivationWrongDeviceRefused(t *testing.T) {
 // --- Le client ne possède PAS de clé privée de signature ---
 
 func TestClientHasNoEmbeddedSigningKey(t *testing.T) {
-	// Sauvegarde et neutralise l'injection de test pour vérifier le
-	// comportement RÉEL de résolution (env + fichier + embarquée).
 	savedSign := testSignKey
 	testSignKey = nil
 	defer func() { testSignKey = savedSign }()
 
-	// Aucune variable d'environnement, aucun fichier admin présent
-	// (répertoire de test vierge) => resolveSignKey doit échouer.
 	oldPriv := os.Getenv("LABOSURF_LICENSE_PRIVKEY")
 	_ = os.Unsetenv("LABOSURF_LICENSE_PRIVKEY")
-	defer os.Setenv("LABOSURF_LICENSE_PRIVKEY", oldPriv)
+	defer func() { _ = os.Setenv("LABOSURF_LICENSE_PRIVKEY", oldPriv) }()
+
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd : %v", err)
+	}
+
+	tempDir := t.TempDir()
+	if err := os.Chdir(tempDir); err != nil {
+		t.Fatalf("Chdir temp : %v", err)
+	}
+	defer func() { _ = os.Chdir(oldWD) }()
 
 	if _, err := resolveSignKey(); err == nil {
 		t.Fatal("SÉCURITÉ : aucune clé privée ne doit être disponible côté client par défaut")

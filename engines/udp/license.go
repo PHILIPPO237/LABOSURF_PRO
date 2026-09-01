@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -16,23 +17,25 @@ import (
 // SYSTÈME DE LICENCE LABOSURF PRO — Cryptographie asymétrique
 // ============================================================
 //
-// MODÈLE DE SÉCURITÉ (Ed25519) :
+// Le License Maker possède la clé PRIVÉE.
+// LABOSURF PRO possède uniquement la clé PUBLIQUE.
 //
-//	OUTIL ADMIN                       CLIENT LABOSURF PRO
-//	    │                                    │
-//	    │ clé PRIVÉE (jamais distribuée)     │ clé PUBLIQUE (non secrète)
-//	    ▼                                    ▼
-//	signature de licence  ───────────►  vérification de licence
+// Format du jeton :
+//   base64url(payload JSON).base64url(signature Ed25519)
 //
-// - Seul l'administrateur possède la clé privée (fichier local, hors binaire).
-// - Le client ne possède QUE la clé publique : il peut vérifier une licence
-//   mais ne peut JAMAIS en fabriquer une nouvelle.
-// - Aucune clé privée de production n'est embarquée dans le binaire client.
-// - Aucune clé déterministe/secours de production n'existe.
+// Le payload signé contient une clé LABOSURF de exactement 40 caractères.
+// La fenêtre de 3 heures concerne uniquement la PREMIÈRE activation.
+// Après activation réussie, l'activation reste valide sur le VPS lié.
 //
-// LIMITATION : ce système empêche la fabrication de fausses licences et
-// leur altération. Il NE protège PAS contre la rétro-ingénierie du binaire
-// ni contre le partage volontaire d'une même installation.
+
+const (
+	productName      = "LABOSURF PRO"
+	activationWindow = 3 * time.Hour
+
+	licensePrefix   = "LABOSURF"
+	licenseLength   = 40
+	licenseAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*_-+=?"
+)
 
 var (
 	ErrLicenseInvalid    = errors.New("licence invalide")
@@ -59,45 +62,36 @@ const (
 	LicenseUnknown  LicenseStatus = "UNKNOWN"
 )
 
-// LicenseData représente les données signées d'une licence.
-// Ces champs sont couverts par la signature Ed25519.
+// LicenseData représente exactement les données signées.
+// Ce schéma doit rester identique dans le License Maker.
 type LicenseData struct {
 	ID              string `json:"id"`
+	Key             string `json:"key"`
 	IssuedAt        string `json:"issued_at"`
-	ExpiresAt       string `json:"expires_at"`
 	ActivationUntil string `json:"activation_until"`
 	Product         string `json:"product"`
-	MaxUsers        int    `json:"max_users"`
 	Comment         string `json:"comment,omitempty"`
 }
 
-// License est un jeton de licence signé.
-//
-// Format textuel distribué au client :
-//
-//	<base64url(payload_json)>.<base64url(signature)>
+// License est un jeton signé.
 type License struct {
 	Data      LicenseData
 	Signature []byte
 }
 
-// ---------- Résolution des clés ----------
-
-// embeddedVerifyKeyHex est la clé PUBLIQUE de vérification embarquée.
-// Vide par défaut : l'administrateur configure sa propre clé publique via
-// le fichier labosurf_pub.key ou la variable LABOSURF_LICENSE_PUBKEY après
-// avoir généré sa paire de clés. Une clé PUBLIQUE n'est pas un secret.
+// embeddedVerifyKeyHex est la clé PUBLIQUE de production.
+// Elle peut être injectée à la compilation ou remplacée par la clé publique
+// fournie dans labosurf_pub.key.
 var embeddedVerifyKeyHex = ""
 
-// testKeys permet aux tests d'injecter une paire de clés sans toucher au
-// système de fichiers ni aux variables d'environnement.
+// Clés injectées uniquement par les tests.
 var (
 	testSignKey   ed25519.PrivateKey
 	testVerifyKey ed25519.PublicKey
 )
 
-// resolveVerifyKey retourne la clé publique de vérification.
-// Priorité : 1) injection de test, 2) env, 3) fichier, 4) embarquée.
+// ---------- Résolution des clés ----------
+
 func resolveVerifyKey() (ed25519.PublicKey, error) {
 	if testVerifyKey != nil {
 		return testVerifyKey, nil
@@ -120,9 +114,8 @@ func resolveVerifyKey() (ed25519.PublicKey, error) {
 	return nil, ErrNoVerifyKey
 }
 
-// resolveSignKey retourne la clé privée de signature (RÉSERVÉ ADMIN).
-// Priorité : 1) injection de test, 2) env, 3) fichier admin.
-// Il n'existe AUCUNE clé privée embarquée ni de secours.
+// Réservé aux tests/outils administrateur.
+// Le binaire client ne doit pas embarquer de clé privée.
 func resolveSignKey() (ed25519.PrivateKey, error) {
 	if testSignKey != nil {
 		return testSignKey, nil
@@ -142,56 +135,82 @@ func resolveSignKey() (ed25519.PrivateKey, error) {
 }
 
 func decodePublicKey(s string) (ed25519.PublicKey, error) {
-	b, err := hex.DecodeString(s)
+	b, err := hex.DecodeString(strings.TrimSpace(s))
 	if err != nil {
 		return nil, fmt.Errorf("clé publique invalide : %w", err)
 	}
+
 	if len(b) != ed25519.PublicKeySize {
-		return nil, fmt.Errorf("clé publique : taille %d attendue %d", len(b), ed25519.PublicKeySize)
+		return nil, fmt.Errorf(
+			"clé publique : taille %d attendue %d",
+			len(b),
+			ed25519.PublicKeySize,
+		)
 	}
+
 	return ed25519.PublicKey(b), nil
 }
 
 func decodePrivateKey(s string) (ed25519.PrivateKey, error) {
-	b, err := hex.DecodeString(s)
+	b, err := hex.DecodeString(strings.TrimSpace(s))
 	if err != nil {
 		return nil, fmt.Errorf("clé privée invalide : %w", err)
 	}
+
 	if len(b) != ed25519.PrivateKeySize {
-		return nil, fmt.Errorf("clé privée : taille %d attendue %d", len(b), ed25519.PrivateKeySize)
+		return nil, fmt.Errorf(
+			"clé privée : taille %d attendue %d",
+			len(b),
+			ed25519.PrivateKeySize,
+		)
 	}
+
 	return ed25519.PrivateKey(b), nil
 }
 
-// GenerateKeyPair génère une nouvelle paire de clés Ed25519.
-// Retourne (clé privée hex, clé publique hex).
-//
-// L'administrateur conserve la clé privée en lieu sûr (jamais distribuée)
-// et publie la clé publique auprès des clients.
+// GenerateKeyPair est conservé pour les tests/outils administrateur.
+// La clé privée ne doit jamais être distribuée avec LABOSURF PRO.
 func GenerateKeyPair() (privHex string, pubHex string, err error) {
-	pub, priv, err := ed25519.GenerateKey(nil)
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return "", "", fmt.Errorf("génération de clés : %w", err)
 	}
+
 	return hex.EncodeToString(priv), hex.EncodeToString(pub), nil
+}
+
+// ---------- Clé LABOSURF de 40 caractères ----------
+
+func validateLicenseKey(key string) bool {
+	if len(key) != licenseLength {
+		return false
+	}
+
+	if !strings.HasPrefix(key, licensePrefix) {
+		return false
+	}
+
+	for _, c := range key[len(licensePrefix):] {
+		if !strings.ContainsRune(licenseAlphabet, c) {
+			return false
+		}
+	}
+
+	return true
 }
 
 // ---------- Signature & vérification ----------
 
-// canonicalPayload sérialise les données de licence de façon déterministe
-// pour la signature.
 func canonicalPayload(data LicenseData) ([]byte, error) {
 	return json.Marshal(data)
 }
 
-// CreateLicense génère et signe une nouvelle licence (RÉSERVÉ ADMIN).
-// Nécessite la clé privée. Le résultat est un jeton texte distribuable.
-func CreateLicense(id string, durationDays int, maxUsers int, comment string) (string, License, error) {
-	if strings.TrimSpace(id) == "" {
+// CreateLicense est conservé pour les tests/outils administrateur.
+// La génération officielle doit être effectuée par le License Maker privé.
+func CreateLicense(id, comment string) (string, License, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
 		return "", License{}, ErrInvalidID
-	}
-	if durationDays < 0 {
-		return "", License{}, errors.New("durée invalide")
 	}
 
 	priv, err := resolveSignKey()
@@ -199,23 +218,28 @@ func CreateLicense(id string, durationDays int, maxUsers int, comment string) (s
 		return "", License{}, err
 	}
 
-	now := time.Now().UTC()
-	expires := ""
-	if durationDays > 0 {
-		expires = now.Add(time.Duration(durationDays) * 24 * time.Hour).Format(time.RFC3339)
+	keyBytes := make([]byte, licenseLength-len(licensePrefix))
+	if _, err := rand.Read(keyBytes); err != nil {
+		return "", License{}, fmt.Errorf("génération de clé : %w", err)
 	}
-	// La fenêtre de remise/activation est courte (3 h). Une fois activée,
-	// cette échéance n'est plus consultée par ActivationStore.Check.
-	activationUntil := now.Add(3 * time.Hour).Format(time.RFC3339)
+
+	var keyBuilder strings.Builder
+	keyBuilder.Grow(licenseLength)
+	keyBuilder.WriteString(licensePrefix)
+
+	for _, v := range keyBytes {
+		keyBuilder.WriteByte(licenseAlphabet[int(v)%len(licenseAlphabet)])
+	}
+
+	now := time.Now().UTC()
 
 	data := LicenseData{
 		ID:              id,
+		Key:             keyBuilder.String(),
 		IssuedAt:        now.Format(time.RFC3339),
-		ExpiresAt:       expires,
-		ActivationUntil: activationUntil,
-		Product:         "LABOSURF PRO",
-		MaxUsers:        maxUsers,
-		Comment:         comment,
+		ActivationUntil: now.Add(activationWindow).Format(time.RFC3339),
+		Product:         productName,
+		Comment:         strings.TrimSpace(comment),
 	}
 
 	payload, err := canonicalPayload(data)
@@ -223,16 +247,19 @@ func CreateLicense(id string, durationDays int, maxUsers int, comment string) (s
 		return "", License{}, err
 	}
 
-	sig := ed25519.Sign(priv, payload)
+	signature := ed25519.Sign(priv, payload)
 
-	token := base64.RawURLEncoding.EncodeToString(payload) + "." +
-		base64.RawURLEncoding.EncodeToString(sig)
+	token := base64.RawURLEncoding.EncodeToString(payload) +
+		"." +
+		base64.RawURLEncoding.EncodeToString(signature)
 
-	return token, License{Data: data, Signature: sig}, nil
+	return token, License{
+		Data:      data,
+		Signature: signature,
+	}, nil
 }
 
-// ParseLicenseToken décode un jeton texte en License (sans vérifier la
-// signature).
+// ParseLicenseToken décode un jeton sans vérifier sa signature.
 func ParseLicenseToken(token string) (License, error) {
 	parts := strings.Split(strings.TrimSpace(token), ".")
 	if len(parts) != 2 {
@@ -244,7 +271,7 @@ func ParseLicenseToken(token string) (License, error) {
 		return License{}, fmt.Errorf("%w : payload", ErrLicenseFormat)
 	}
 
-	sig, err := base64.RawURLEncoding.DecodeString(parts[1])
+	signature, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
 		return License{}, fmt.Errorf("%w : signature", ErrLicenseFormat)
 	}
@@ -254,49 +281,58 @@ func ParseLicenseToken(token string) (License, error) {
 		return License{}, fmt.Errorf("%w : json", ErrLicenseFormat)
 	}
 
-	return License{Data: data, Signature: sig}, nil
+	if !validateLicenseKey(data.Key) {
+		return License{}, ErrLicenseInvalid
+	}
+
+	return License{
+		Data:      data,
+		Signature: signature,
+	}, nil
 }
 
-// verifySignature vérifie la signature Ed25519 d'une licence avec la clé
-// publique. Recalcule le payload canonique à partir des données.
 func verifySignature(lic License, pub ed25519.PublicKey) bool {
 	payload, err := canonicalPayload(lic.Data)
 	if err != nil {
 		return false
 	}
+
 	return ed25519.Verify(pub, payload, lic.Signature)
 }
 
-// VerifyLicenseToken vérifie un jeton texte : signature + expiration.
-// Retourne les données et le statut. C'est le point d'entrée CLIENT.
+// VerifyLicenseToken vérifie un jeton : format + signature.
+// La fenêtre ActivationUntil est volontairement vérifiée lors de
+// la première activation, pas ici.
 func VerifyLicenseToken(token string) (LicenseData, LicenseStatus, error) {
 	lic, err := ParseLicenseToken(token)
 	if err != nil {
 		return LicenseData{}, LicenseUnknown, err
 	}
+
 	return VerifyLicense(lic)
 }
 
-// VerifyLicense vérifie une licence déjà décodée (signature + expiration).
+// VerifyLicense vérifie une licence déjà décodée.
+//
+// Important : ActivationUntil n'est PAS une date d'expiration permanente.
+// Elle indique seulement jusqu'à quand la licence peut être activée pour
+// la première fois. Une licence déjà activée reste valide sur son VPS.
 func VerifyLicense(lic License) (LicenseData, LicenseStatus, error) {
 	pub, err := resolveVerifyKey()
 	if err != nil {
 		return lic.Data, LicenseUnknown, err
 	}
 
-	if !verifySignature(lic, pub) {
-		return lic.Data, LicenseTampered, ErrLicenseTampered
+	if !validateLicenseKey(lic.Data.Key) {
+		return lic.Data, LicenseUnknown, ErrLicenseInvalid
 	}
 
-	if lic.Data.ExpiresAt != "" {
-		exp, err := time.Parse(time.RFC3339, lic.Data.ExpiresAt)
-		if err != nil {
-			// Date illisible => on considère la licence invalide par prudence.
-			return lic.Data, LicenseExpired, ErrLicenseExpired
-		}
-		if time.Now().After(exp) {
-			return lic.Data, LicenseExpired, ErrLicenseExpired
-		}
+	if lic.Data.Product != productName {
+		return lic.Data, LicenseUnknown, ErrLicenseInvalid
+	}
+
+	if !verifySignature(lic, pub) {
+		return lic.Data, LicenseTampered, ErrLicenseTampered
 	}
 
 	return lic.Data, LicenseActive, nil
