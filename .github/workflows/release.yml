@@ -36,15 +36,20 @@ jobs:
           test "$(wc -c < license_pub.key)" -eq 64
 
       - name: Build Linux binaries
-        working-directory: engines/udp
         env:
           PUBKEY: ${{ vars.LABOSURF_LICENSE_PUBKEY }}
         run: |
-          mkdir -p ../../dist
-          go build -trimpath -ldflags "-X main.embeddedVerifyKeyHex=${PUBKEY}" -o ../../dist/labosurf-linux-amd64 .
-          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "-X main.embeddedVerifyKeyHex=${PUBKEY}" -o ../../dist/labosurf-linux-arm64 .
-          cp license_pub.key ../../dist/license_pub.key
-          sha256sum ../../dist/labosurf-linux-* ../../dist/license_pub.key > ../../dist/SHA256SUMS
+          mkdir -p dist
+          cd engines/udp
+
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64             go build -trimpath             -ldflags "-X main.embeddedVerifyKeyHex=${PUBKEY}"             -o ../../dist/labosurf-linux-amd64 .
+
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64             go build -trimpath             -ldflags "-X main.embeddedVerifyKeyHex=${PUBKEY}"             -o ../../dist/labosurf-linux-arm64 .
+
+          cp ../../license_pub.key ../../dist/license_pub.key
+
+          cd ../../dist
+          sha256sum labosurf-linux-* license_pub.key > SHA256SUMS
 
       - name: Create GitHub Release
         env:
