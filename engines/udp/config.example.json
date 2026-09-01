@@ -1,0 +1,22 @@
+{
+  "listen": ":5667",
+  "store": "/etc/labosurf/users_db.json",
+  "portal": {
+    "enabled": true,
+    "listen": ":8080"
+  },
+  "license": {
+    "activation": "/etc/labosurf/activation.json",
+    "machine_id": "/etc/labosurf/machine.id",
+    "registry": "/etc/labosurf/licenses.json"
+  },
+  "tun": {
+    "enabled": false,
+    "name": "labosurf0",
+    "address": "10.77.0.1/24"
+  },
+  "auth": {
+    "mode": "passwords",
+    "users": {}
+  }
+}

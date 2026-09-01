@@ -1,0 +1,6 @@
+
+zivpn
+*.exe
+store.json
+config.json
+users_db.json

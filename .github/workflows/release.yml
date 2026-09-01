@@ -1,0 +1,53 @@
+name: LABOSURF PRO Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test-build-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+          cache-dependency-path: engines/udp/go.sum
+
+      - name: Tests
+        working-directory: engines/udp
+        run: go test ./...
+
+      - name: Read public verification key
+        id: key
+        env:
+          PUBLIC_KEY: ${{ vars.LABOSURF_LICENSE_PUBKEY }}
+        run: |
+          test -n "$PUBLIC_KEY" || { echo "LABOSURF_LICENSE_PUBKEY est manquante dans Settings > Secrets and variables > Actions > Variables."; exit 1; }
+          echo "$PUBLIC_KEY" | tr -d '[:space:]' > license_pub.key
+          test "$(wc -c < license_pub.key)" -eq 64
+
+      - name: Build Linux binaries
+        working-directory: engines/udp
+        env:
+          PUBKEY: ${{ vars.LABOSURF_LICENSE_PUBKEY }}
+        run: |
+          mkdir -p ../../dist
+          go build -trimpath -ldflags "-X main.embeddedVerifyKeyHex=${PUBKEY}" -o ../../dist/labosurf-linux-amd64 .
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "-X main.embeddedVerifyKeyHex=${PUBKEY}" -o ../../dist/labosurf-linux-arm64 .
+          cp license_pub.key ../../dist/license_pub.key
+          sha256sum ../../dist/labosurf-linux-* ../../dist/license_pub.key > ../../dist/SHA256SUMS
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/* --generate-notes --title "LABOSURF PRO ${GITHUB_REF_NAME}"

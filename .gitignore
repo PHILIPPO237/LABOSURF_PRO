@@ -1,0 +1,28 @@
+# Runtime / données locales
+users_db.json
+/etc/labosurf/users_db.json
+config.local.json
+
+# Secrets
+.env
+*.key
+*.pem
+labosurf_admin.key
+.labosurf_admin.key
+
+# Temporaires / logs / sauvegardes
+*.tmp
+*.log
+*.backup
+*.backup2
+*.before-*
+*.before-labosurf
+
+# Binaires locaux
+labosurf-android-arm64
+labosurf-linux-arm64
+labosurf-linux-amd64
+dist/
+
+# Configuration locale contenant potentiellement des secrets
+engines/udp/config.json
