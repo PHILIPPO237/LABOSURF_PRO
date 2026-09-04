@@ -213,6 +213,9 @@ func main() {
 	case "udp":
 		runUDPEngineCmd(os.Args[2:])
 
+	case "vpn":
+		runVPNClient(os.Args[2:])
+
 	case "admin":
 		if err := runAdmin(os.Args[2:]); err != nil {
 			log.Fatal(err)

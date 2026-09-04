@@ -604,6 +604,8 @@ func printAccount(a Account) {
 		state = "inactif"
 	}
 
+	srv := serverAddress()
+
 	fmt.Println("  ── Compte ─────────────────────────────")
 	fmt.Printf("  ID              : %s\n", a.ID)
 	fmt.Printf("  Utilisateur     : %s\n", a.Username)
@@ -621,4 +623,11 @@ func printAccount(a Account) {
 	if a.Token != "" {
 		fmt.Printf("  Lien (token)    : %s\n", a.Token)
 	}
+	fmt.Println()
+	fmt.Println("  ── Connexion VPN ──────────────────────")
+	fmt.Printf("  Serveur         : %s\n", srv)
+	fmt.Printf("  Port UDP        : 5667\n")
+	fmt.Printf("  Protocole       : UDP\n")
+	fmt.Printf("  Réseau VPN      : 10.77.0.0/24\n")
+	fmt.Println("  Client          : saisir ces infos dans l'app VPN")
 }

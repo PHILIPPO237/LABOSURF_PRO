@@ -1,95 +1,38 @@
-package main
+package store
 
 import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
 )
 
-// ============================================================
-// STORE LABOSURF — Source de vérité unique des comptes
-// ============================================================
-//
-// Le store persiste sur disque (JSON) les comptes clients et les offres.
-// Il constitue la source de vérité partagée par TOUTES les couches :
-//
-//	ADMIN (CLI)  ─┐
-//	              ├─► store.json ─►  UDP ENGINE (auth + règles)
-//	PORTAIL HTTP ─┘                  PORTAIL (page client)
-//
-// Le même compte logique (Account.ID) est ainsi identifiable de bout en
-// bout : administration, compte, abonnement, session UDP Engine et portail.
+// DefaultStoreFilename est la base du fichier store dans le répertoire de
+// données LABOSURF.
+const DefaultStoreFilename = "users_db.json"
 
-var (
-	ErrAccountExists   = errors.New("compte déjà existant")
-	ErrAccountNotFound = errors.New("compte introuvable")
-	ErrOfferExists     = errors.New("offre déjà existante")
-	ErrOfferNotFound   = errors.New("offre introuvable")
-	ErrInvalidID       = errors.New("identifiant invalide")
-	ErrTokenNotFound   = errors.New("lien client introuvable")
-)
-
-// Account représente un compte client complet.
-//
-//	CLIENT
-//	  ├── identifiant     (ID / Username)
-//	  ├── authentification (Password)
-//	  ├── état            (Enabled)
-//	  ├── expiration      (ExpiresAt)
-//	  ├── quota           (QuotaBytes)
-//	  ├── connexions max  (MaxConnections)
-//	  └── IP max          (MaxIPs)
-type Account struct {
-	ID             string `json:"id"`
-	Username       string `json:"username"`
-	Password       string `json:"password"`
-	ExpiresAt      string `json:"expires_at"`
-	QuotaBytes     uint64 `json:"quota_bytes"`
-	MaxConnections int    `json:"max_connections"`
-	MaxIPs         int    `json:"max_ips"`
-	Enabled        bool   `json:"enabled"`
-
-	// Abonnement (PHASE 7) : rattachement à une offre.
-	OfferID string `json:"offer_id,omitempty"`
-
-	// Lien client (PHASE 8) : token opaque du portail. Ce n'est JAMAIS
-	// le mot de passe du compte.
-	Token string `json:"token,omitempty"`
-
-	// Données runtime (non persistées) — utilisées par le portail HTTP
-	// pour afficher l'état en temps réel depuis le SessionManager.
-	UsedBytes    int64    `json:"-"`
-	CurrentConns int      `json:"-"`
-	CurrentIPs   []string `json:"-"`
-
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
+// StorePath retourne le chemin central du store. Le répertoire de données
+// est surchargeable via LABOSURF_DATA_DIR (défaut /etc/labosurf).
+func StorePath() string {
+	dataDir := os.Getenv("LABOSURF_DATA_DIR")
+	if dataDir == "" {
+		dataDir = "/etc/labosurf"
+	}
+	return filepath.Join(dataDir, DefaultStoreFilename)
 }
 
-// Offer définit un modèle d'abonnement réutilisable (PHASE 7).
-type Offer struct {
-	ID             string `json:"id"`
-	Name           string `json:"name"`
-	DurationDays   int    `json:"duration_days"`
-	QuotaBytes     uint64 `json:"quota_bytes"`
-	MaxConnections int    `json:"max_connections"`
-	MaxIPs         int    `json:"max_ips"`
-}
-
+// storeData est la sérialisation persistée du store central.
 type storeData struct {
 	Accounts map[string]*Account `json:"accounts"`
 	Offers   map[string]*Offer   `json:"offers"`
 }
 
-// Store gère la persistance et l'accès concurrent aux comptes/offres.
+// Store gère la persistance et l'accès concurrent aux comptes/offres/grants.
 type Store struct {
 	path string
 	mu   sync.RWMutex
@@ -113,7 +56,7 @@ func LoadStore(path string) (*Store, error) {
 
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		if os.IsNotExist(err) {
 			return s, nil
 		}
 		return nil, fmt.Errorf("lecture du store %s : %w", path, err)
@@ -177,16 +120,20 @@ func (s *Store) saveLocked() error {
 	return nil
 }
 
-// normalizeID normalise un identifiant de compte.
-func normalizeID(id string) string {
+// NormalizeID normalise un identifiant de compte (minuscules, sans espaces).
+// Exportée pour permettre aux moteurs de reproduire la même normalisation.
+func NormalizeID(id string) string {
 	return strings.ToLower(strings.TrimSpace(id))
+}
+
+func normalizeID(id string) string {
+	return NormalizeID(id)
 }
 
 func nowRFC3339() string {
 	return time.Now().UTC().Format(time.RFC3339)
 }
 
-// randToken génère un jeton aléatoire opaque (hex) de nBytes octets.
 func randToken(nBytes int) (string, error) {
 	b := make([]byte, nBytes)
 	if _, err := rand.Read(b); err != nil {
@@ -195,13 +142,18 @@ func randToken(nBytes int) (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// expiryFromDays calcule une date d'expiration RFC3339 à partir de
-// maintenant + days jours. days <= 0 => pas d'expiration (chaîne vide).
 func expiryFromDays(days int) string {
 	if days <= 0 {
 		return ""
 	}
 	return time.Now().UTC().Add(time.Duration(days) * 24 * time.Hour).Format(time.RFC3339)
+}
+
+// ExpiryFromDays calcule une date d'expiration RFC3339 à partir de maintenant
+// + days jours. days <= 0 => pas d'expiration (chaîne vide). Exportée pour
+// les moteurs qui créent des comptes.
+func ExpiryFromDays(days int) string {
+	return expiryFromDays(days)
 }
 
 // ---------- Comptes ----------
@@ -240,8 +192,6 @@ func (s *Store) CreateAccount(acc Account) (Account, error) {
 		acc.MaxIPs = 1
 	}
 
-	// Génération automatique du lien client unique (token opaque).
-	// Ce token n'est JAMAIS le mot de passe du compte.
 	if acc.Token == "" {
 		tk, err := s.uniqueTokenLocked()
 		if err != nil {
@@ -290,12 +240,18 @@ func (s *Store) ListAccounts() []Account {
 	for _, acc := range s.data.Accounts {
 		out = append(out, *acc)
 	}
-
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].ID < out[j].ID
-	})
+	sortByID(out)
 
 	return out
+}
+
+func sortByID(accs []Account) {
+	// Petit tri par insertion : les stores sont de petite taille.
+	for i := 1; i < len(accs); i++ {
+		for j := i; j > 0 && accs[j].ID < accs[j-1].ID; j-- {
+			accs[j], accs[j-1] = accs[j-1], accs[j]
+		}
+	}
 }
 
 // mutateAccount applique une mutation à un compte existant puis persiste.
@@ -315,7 +271,6 @@ func (s *Store) mutateAccount(id string, fn func(*Account)) (Account, error) {
 	acc.ID = nid
 	acc.UpdatedAt = nowRFC3339()
 
-	// Maintien de l'index token si celui-ci a changé.
 	if before.Token != acc.Token {
 		if before.Token != "" {
 			delete(s.tokens, before.Token)
@@ -391,11 +346,10 @@ func (s *Store) SetExpiry(id, expiresAt string) (Account, error) {
 	return s.mutateAccount(id, func(a *Account) { a.ExpiresAt = expiresAt })
 }
 
-// Renew prolonge l'accès de `days` jours à partir de l'expiration courante
-// (ou de maintenant si le compte est déjà expiré / sans expiration).
+// Renew prolonge l'accès de `days` jours.
 func (s *Store) Renew(id string, days int) (Account, error) {
 	if days <= 0 {
-		return Account{}, errors.New("nombre de jours invalide")
+		return Account{}, fmt.Errorf("nombre de jours invalide")
 	}
 
 	return s.mutateAccount(id, func(a *Account) {
@@ -409,16 +363,72 @@ func (s *Store) Renew(id string, days int) (Account, error) {
 	})
 }
 
-//	UserConfigs projette les comptes vers la map attendue par le moteur UDP Engine
-//
-// (clé = Username). Le moteur applique ensuite lui-même l'activation et
-// l'expiration.
+// AddGrant rattache un compte à un moteur. Le grant ne doit pas déjà exister.
+func (s *Store) AddGrant(accountID, engine string, cfg map[string]any) (Account, error) {
+	return s.mutateAccount(accountID, func(a *Account) {
+		if a.Grants == nil {
+			a.Grants = make(map[string]*EngineGrant)
+		}
+		if _, exists := a.Grants[engine]; exists {
+			return
+		}
+		a.Grants[engine] = &EngineGrant{
+			Engine:  engine,
+			Config:  cfg,
+			Enabled: true,
+		}
+	})
+}
+
+// RemoveGrant détache un compte d'un moteur.
+func (s *Store) RemoveGrant(accountID, engine string) (Account, error) {
+	return s.mutateAccount(accountID, func(a *Account) {
+		if a.Grants != nil {
+			delete(a.Grants, engine)
+		}
+	})
+}
+
+// SetGrantEnabled active/désactive l'accès d'un compte à un moteur.
+func (s *Store) SetGrantEnabled(accountID, engine string, enabled bool) (Account, error) {
+	return s.mutateAccount(accountID, func(a *Account) {
+		if a.Grants != nil {
+			if g := a.Grants[engine]; g != nil {
+				g.Enabled = enabled
+			}
+		}
+	})
+}
+
+// SetGrantConfig remplace la configuration d'un compte pour un moteur.
+func (s *Store) SetGrantConfig(accountID, engine string, cfg map[string]any) (Account, error) {
+	return s.mutateAccount(accountID, func(a *Account) {
+		if a.Grants != nil {
+			if g := a.Grants[engine]; g != nil {
+				g.Config = cfg
+			}
+		}
+	})
+}
+
+// UserConfigs projette les comptes vers la map attendue par le moteur UDP
+// (clé = Username). Un compte n'y figure QUE s'il a un grant UDP actif :
+// c'est ainsi que « un compte peut se connecter à plusieurs moteurs » se
+// traduit — seul le moteur auquel le compte a accès l'autorise.
 func (s *Store) UserConfigs() map[string]UserConfig {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	out := make(map[string]UserConfig, len(s.data.Accounts))
 	for _, acc := range s.data.Accounts {
+		// Le compte a l'accès UDP ? (grant UDP présent et activé)
+		if acc.Grants == nil {
+			continue
+		}
+		g, ok := acc.Grants[EngineUDP]
+		if !ok || !g.Enabled {
+			continue
+		}
 		username := acc.Username
 		if username == "" {
 			username = acc.ID
@@ -444,12 +454,7 @@ func (s *Store) Count() int {
 	return len(s.data.Accounts)
 }
 
-// ---------- Offres et abonnements (PHASE 7) ----------
-//
-// Séparation des responsabilités :
-//   - l'OFFRE est un modèle commercial (durée, quota, limites) ;
-//   - l'ABONNEMENT (Subscribe) applique les paramètres de l'offre au
-// COMPTE, que le moteur UDP Engine consomme ensuite comme des règles.
+// ---------- Offres et abonnements ----------
 
 func (s *Store) CreateOffer(o Offer) (Offer, error) {
 	id := normalizeID(o.ID)
@@ -503,9 +508,12 @@ func (s *Store) ListOffers() []Offer {
 		out = append(out, *o)
 	}
 
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].ID < out[j].ID
-	})
+	// Tri par ID.
+	for i := 1; i < len(out); i++ {
+		for j := i; j > 0 && out[j].ID < out[j-1].ID; j-- {
+			out[j], out[j-1] = out[j-1], out[j]
+		}
+	}
 
 	return out
 }
@@ -531,9 +539,7 @@ func (s *Store) DeleteOffer(id string) error {
 	return nil
 }
 
-// Subscribe rattache un compte à une offre et applique ses paramètres :
-// l'expiration (maintenant + durée), le quota et les limites. L'abonnement
-// démarre au moment de la souscription.
+// Subscribe rattache un compte à une offre et applique ses paramètres.
 func (s *Store) Subscribe(accountID, offerID string) (Account, error) {
 	nid := normalizeID(accountID)
 	oid := normalizeID(offerID)
@@ -581,17 +587,11 @@ func (s *Store) OfferCount() int {
 	return len(s.data.Offers)
 }
 
-// ---------- Liens clients (PHASE 8) ----------
+// ---------- Liens clients ----------
 //
-// Chaque compte peut posséder un token opaque servant de lien client
-// unique vers le portail HTTP. Propriétés de sécurité garanties :
-//   - le token est aléatoire (32 octets) et distinct du mot de passe ;
-//   - un token ne référence qu'UN SEUL compte (isolation A ≠ B) ;
-//   - régénérer un token invalide immédiatement l'ancien ;
-//   - révoquer un token supprime tout accès au portail pour ce compte.
+// Chaque compte possède un token opaque serv de lien client unique vers le
+// portail HTTP. Un token ne référence qu'UN SEUL compte.
 
-// uniqueTokenLocked génère un token opaque garanti unique dans le store.
-// L'appelant doit détenir le verrou en écriture.
 func (s *Store) uniqueTokenLocked() (string, error) {
 	for {
 		tk, err := randToken(32)
@@ -604,8 +604,7 @@ func (s *Store) uniqueTokenLocked() (string, error) {
 	}
 }
 
-// GenerateToken (ré)génère le lien client d'un compte. L'ancien token, s'il
-// existait, est immédiatement invalidé.
+// GenerateToken (ré)génère le lien client d'un compte.
 func (s *Store) GenerateToken(accountID string) (Account, error) {
 	nid := normalizeID(accountID)
 
@@ -640,7 +639,7 @@ func (s *Store) GenerateToken(accountID string) (Account, error) {
 	return *acc, nil
 }
 
-// RevokeToken supprime le lien client d'un compte (invalidation définitive).
+// RevokeToken supprime le lien client d'un compte.
 func (s *Store) RevokeToken(accountID string) (Account, error) {
 	nid := normalizeID(accountID)
 
@@ -669,9 +668,7 @@ func (s *Store) RevokeToken(accountID string) (Account, error) {
 	return *acc, nil
 }
 
-// GetByToken résout un token vers son compte (copie défensive). C'est le
-// point d'entrée du portail : il ne retourne QUE le compte associé au token,
-// garantissant l'isolation entre clients.
+// GetByToken résout un token vers son compte (copie défensive).
 func (s *Store) GetByToken(token string) (Account, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

@@ -23,21 +23,28 @@ jobs:
           cache-dependency-path: engines/udp/go.sum
 
       - name: Tests
-        working-directory: engines/udp
-        run: go test ./...
+        run: |
+          go test ./internal/...
+          go build ./...
+          (cd engines/udp && go test ./...)
 
       - name: Read public verification key
         id: key
-        env:
-          PUBLIC_KEY: ${{ vars.LABOSURF_LICENSE_PUBKEY }}
         run: |
-          test -n "$PUBLIC_KEY" || { echo "LABOSURF_LICENSE_PUBKEY est manquante dans Settings > Secrets and variables > Actions > Variables."; exit 1; }
-          echo "$PUBLIC_KEY" | tr -d '[:space:]' > license_pub.key
-          test "$(wc -c < license_pub.key)" -eq 64
+          KEY_FILE="release/license_pub.key"
+          if [[ ! -f "$KEY_FILE" ]]; then
+            # Fallback: copier depuis engines/udp/ si release/ pas encore à jour
+            KEY_FILE="engines/udp/labosurf_pub.key"
+          fi
+          test -f "$KEY_FILE" || { echo "Fichier clé publique introuvable (release/license_pub.key ou engines/udp/labosurf_pub.key)."; exit 1; }
+          PUBKEY="$(tr -d '[:space:]' < "$KEY_FILE")"
+          test "${#PUBKEY}" -eq 64 || { echo "Clé publique invalide (${#PUBKEY} caractères, 64 attendus)."; exit 1; }
+          echo "$PUBKEY" > license_pub.key
+          echo "PUBKEY=${PUBKEY}" >> "$GITHUB_OUTPUT"
 
       - name: Build Linux binaries
         env:
-          PUBKEY: ${{ vars.LABOSURF_LICENSE_PUBKEY }}
+          PUBKEY: ${{ steps.key.outputs.PUBKEY }}
         run: |
           mkdir -p dist
           cd engines/udp
@@ -46,12 +53,32 @@ jobs:
 
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64             go build -trimpath             -ldflags "-X main.embeddedVerifyKeyHex=${PUBKEY}"             -o ../../dist/labosurf-linux-arm64 .
 
+          # Binaire Android/ARM64 pour une utilisation en local sous Termux
+          # (menu admin, gestion des comptes, licences directement sur le
+          # téléphone). CGO désactivé : pas besoin du NDK Android.
+          CGO_ENABLED=0 GOOS=android GOARCH=arm64             go build -trimpath             -ldflags "-X main.embeddedVerifyKeyHex=${PUBKEY}"             -o ../../dist/labosurf-android-arm64 .
+
           cp ../../license_pub.key ../../dist/license_pub.key
 
           cd ../../dist
-          sha256sum labosurf-linux-* license_pub.key > SHA256SUMS
+          sha256sum labosurf-linux-* labosurf-android-* license_pub.key > SHA256SUMS
 
-      - name: Create GitHub Release
+      - name: Build engine binaries
+        run: |
+          cd "${{ github.workspace }}"
+          mkdir -p dist
+          ENGINES="xray slowdns dnstt hysteria udp ssh"
+          for name in $ENGINES; do
+            for goos_arch in linux/amd64 linux/arm64 android/arm64; do
+              GOOS="${goos_arch%/*}"; GOARCH="${goos_arch#*/}"
+              CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
+                go build -trimpath \
+                -o "dist/labosurf-${name}-${GOOS}-${GOARCH}" \
+                "./cmd/labosurf-${name}"
+            done
+          done
+          cd dist
+          sha256sum labosurf-*-linux-* labosurf-*-android-* > SHA256SUMS.engines
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

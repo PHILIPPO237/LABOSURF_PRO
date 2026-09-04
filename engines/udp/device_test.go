@@ -22,7 +22,7 @@ func (m *mockDevice) Close() error {
 	return nil
 }
 
-func TestNetworkDevice(t *testing.T) {
+func TestTunnelDevice(t *testing.T) {
 	device := &mockDevice{name: "test0"}
 
 	if device.Name() != "test0" {

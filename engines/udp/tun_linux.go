@@ -10,6 +10,13 @@ import (
 	"unsafe"
 )
 
+// ============================================================
+// TUN DEVICE — LINUX
+// ============================================================
+//
+// Création de l'interface TUN via /dev/net/tun et ioctl TUNSETIFF.
+// Configuration réseau (IP, UP, MTU) via ioctl SIOCSIF*.
+
 const (
 	iffTun    = 0x0001
 	iffNoPI   = 0x1000
@@ -20,6 +27,35 @@ type ifreq struct {
 	Name  [16]byte
 	Flags uint16
 	_     [22]byte
+}
+
+// ifreqWithFlags est utilisé pour SIOCGIFFLAGS / SIOCSIFFLAGS.
+type ifreqWithFlags struct {
+	Name  [16]byte
+	Flags int32
+	_     [12]byte
+}
+
+// sockaddrIn est la structure d'adresse IPv4 pour ioctl.
+type sockaddrIn struct {
+	Family uint16
+	Port   [2]byte
+	Addr   [4]byte
+	_      [8]byte
+}
+
+// ifreqAddr est utilisé pour SIOCSIFADDR / SIOCSIFNETMASK.
+type ifreqAddr struct {
+	Name [16]byte
+	Addr sockaddrIn
+	_    [16]byte
+}
+
+// ifreqMTU est utilisé pour SIOCSIFMTU.
+type ifreqMTU struct {
+	Name [16]byte
+	MTU  int32
+	_    [12]byte
 }
 
 type TUNDevice struct {

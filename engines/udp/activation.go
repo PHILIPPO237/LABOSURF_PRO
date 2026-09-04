@@ -201,14 +201,14 @@ func (as *ActivationStore) Activate(token string, registry *LicenseRegistry) (Ac
 		return ActivationResult{Status: status, Data: data}, err
 	}
 
-	// Fenêtre d'activation de 3 heures : elle ne s'applique
-	// qu'au premier enregistrement de l'activation.
-	deadline, err := time.Parse(time.RFC3339, data.ActivationUntil)
-	if err != nil {
-		return ActivationResult{Status: LicenseExpired, Data: data}, ErrLicenseExpired
-	}
-	if time.Now().UTC().After(deadline) {
-		return ActivationResult{Status: LicenseExpired, Data: data}, ErrLicenseExpired
+	// Fenêtre d'activation : la première activation doit avoir lieu
+	// avant l'expiration de ActivationUntil. Une licence déjà activée
+	// reste valide même après expiration (voir Check).
+	if data.ActivationUntil != "" {
+		until, err := time.Parse(time.RFC3339, data.ActivationUntil)
+		if err == nil && time.Now().UTC().After(until) {
+			return ActivationResult{Status: LicenseExpired, Data: data}, ErrLicenseExpired
+		}
 	}
 
 	// Révocation : contrôlée si le registre administrateur est disponible.

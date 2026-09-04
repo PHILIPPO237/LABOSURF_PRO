@@ -24,10 +24,24 @@ labosurf-linux-arm64
 labosurf-linux-amd64
 dist/
 
+# Binaires locaux compilés sans extension (go build -o ...)
+/labosurf
+/engine
+/labosurf-mgr.exe
+/engines/udp/labosurf
+/engines/udp/labosurf-server
+/engines/udp/coverage
+/coverage.out
+
+# Binaires / tests compilés (Windows ou produites par go test)
+*.exe
+*.test
+
 # Configuration locale contenant potentiellement des secrets
 engines/udp/config.json
 
-# Donnees locales de test
-engines/udp/labosurf_test
-engines/udp/licenses.json
+# Données runtime locales / identifiants / tokens
 engines/udp/runtime/
+
+# Base de licences locale / tokens
+engines/udp/licenses.json

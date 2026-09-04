@@ -14,15 +14,6 @@ const defaultListen = ":5667"
 // defaultPortalListen est l'adresse d'écoute par défaut du portail HTTP.
 const defaultPortalListen = ":8080"
 
-type UserConfig struct {
-	Password       string `json:"password"`
-	ExpiresAt      string `json:"expires_at"`
-	QuotaBytes     uint64 `json:"quota_bytes"`
-	MaxConnections int    `json:"max_connections"`
-	MaxIPs         int    `json:"max_ips"`
-	Enabled        bool   `json:"enabled"`
-}
-
 type Config struct {
 	Listen string `json:"listen"`
 

@@ -476,3 +476,66 @@ func TestServerCleanupClosesStreamOnExpiredSession(t *testing.T) {
 		t.Fatal("la session doit être retirée après nettoyage")
 	}
 }
+
+func TestServerCleanupReleasesTunnelIP(t *testing.T) {
+	pool, err := NewTunnelIPPool("10.77.0.0/24")
+	if err != nil {
+		t.Fatalf("création du pool : %v", err)
+	}
+
+	srv := &Server{
+		sessions:   NewSessionManager(time.Minute),
+		tunnelPool: pool,
+		streams:    make(map[string]net.Conn),
+	}
+
+	clientID := "cleanup-ip-test"
+
+	session := &Session{
+		ClientID:     clientID,
+		LastActivity: time.Now().Add(-time.Hour),
+	}
+
+	srv.sessions.mu.Lock()
+	srv.sessions.sessions[clientID] = session
+	srv.sessions.mu.Unlock()
+
+	ip, err := srv.tunnelPool.Allocate(clientID)
+	if err != nil {
+		t.Fatalf("allocation IP : %v", err)
+	}
+
+	if ip == nil {
+		t.Fatal("une IP VPN aurait dû être attribuée")
+	}
+
+	expired := srv.sessions.Cleanup()
+	if len(expired) != 1 || expired[0] != clientID {
+		t.Fatalf("session expirée inattendue : %v", expired)
+	}
+
+	srv.removeSession(clientID)
+
+	if _, ok := srv.tunnelPool.Lookup(ip); ok {
+		t.Fatalf("l'IP %s doit être libérée après expiration", ip)
+	}
+
+	newClientID := "cleanup-ip-test-new"
+
+	newIP, err := srv.tunnelPool.Allocate(newClientID)
+	if err != nil {
+		t.Fatalf("réallocation IP : %v", err)
+	}
+
+	if newIP == nil {
+		t.Fatal("une nouvelle IP VPN aurait dû être attribuée")
+	}
+
+	if _, stillAllocated := srv.tunnelPool.Lookup(ip); stillAllocated {
+		t.Fatalf(
+			"l'IP libérée devrait pouvoir être réutilisée : ancienne=%s nouvelle=%s",
+			ip,
+			newIP,
+		)
+	}
+}

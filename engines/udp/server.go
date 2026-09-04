@@ -124,7 +124,14 @@ func (s *Server) Run(ctx context.Context) error {
 	log.Println("       LABORATOIRE DU FREESURF")
 	log.Println("==========================================")
 	log.Printf("Serveur UDP : %s", s.conn.LocalAddr())
-	log.Printf("Backend TCP : %s", s.backendAddress())
+
+	if s.tun != nil {
+		log.Printf("Mode VPN    : TUN (%s)", s.tun.Name())
+		log.Printf("Backend TCP : %s (désactivé en mode VPN)", s.backendAddress())
+	} else {
+		log.Printf("Mode        : Proxy TCP → %s", s.backendAddress())
+	}
+
 	log.Printf("Mode auth   : %s", s.config.Auth.Mode)
 	log.Printf(
 		"Utilisateurs configurés : %d",
@@ -132,6 +139,12 @@ func (s *Server) Run(ctx context.Context) error {
 	)
 	log.Printf("Expiration session : %s", sessionTimeout)
 	log.Println("UDP Engine démarré.")
+
+	// Démarrer le loop TUN si l'interface est disponible.
+	// Ce goroutine lit les paquets IP depuis TUN et les envoie aux clients UDP.
+	if s.tun != nil {
+		go s.tunLoop(ctx)
+	}
 
 	buffer := make([]byte, maxUDPPacketSize)
 
@@ -151,7 +164,9 @@ func (s *Server) Run(ctx context.Context) error {
 
 		if err != nil {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				s.sessions.Cleanup()
+				for _, clientID := range s.sessions.Cleanup() {
+					s.removeSession(clientID)
+				}
 				s.cleanupExpiredStreams()
 				continue
 			}
@@ -171,6 +186,133 @@ func (s *Server) Run(ctx context.Context) error {
 
 		s.handlePacket(client, packet)
 	}
+}
+
+// tunLoop lit les paquets IP depuis l'interface TUN et les envoie aux clients
+// UDP appropriés. C'est le chemin retour du VPN : Internet → TUN → Serveur → Client.
+//
+// Chaque paquet lu depuis TUN contient un en-tête IP. La destination IP détermine
+// quel client doit recevoir le paquet (via le pool d'IP virtuelles).
+func (s *Server) tunLoop(ctx context.Context) {
+	log.Println("[tunLoop] Démarrage du loop TUN → UDP")
+
+	// Buffer de 65535 octets pour les paquets IP (max théorique)
+	buffer := make([]byte, 65535)
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("[tunLoop] Arrêt du loop TUN")
+			return
+		default:
+		}
+
+		// Lire un paquet IP depuis le TUN
+		n, err := s.tun.Read(buffer)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			log.Printf("[tunLoop] Erreur lecture TUN : %v", err)
+			continue
+		}
+
+		if n == 0 {
+			continue
+		}
+
+		pkt := buffer[:n]
+
+		// Extraire l'adresse IP destination du paquet
+		dstIP := parseDstIP(pkt)
+		if dstIP == nil {
+			continue
+		}
+
+		// Trouver le client UDP associé à cette IP virtuelle
+		if s.tunnelPool == nil {
+			continue
+		}
+
+		clientID, found := s.tunnelPool.Lookup(dstIP)
+		if !found {
+			// Paquet pour une IP non allouée — ignoré
+			continue
+		}
+
+		// Récupérer la session pour obtenir l'adresse UDP du client
+		session, ok := s.sessions.Get(clientID)
+		if !ok || session.RemoteAddr == nil {
+			continue
+		}
+
+		// Appliquer les règles du compte avant d'envoyer
+		if decision := s.sessions.Authorize(clientID); decision != TrafficAllowed {
+			continue
+		}
+
+		// Encoder le paquet avec le protocole tunnel
+		tunnelPkt, encErr := EncodeTunnelPacket(tunnelClientID(clientID), pkt)
+		if encErr != nil {
+			log.Printf("[tunLoop] Encodage tunnel échoué : %v", encErr)
+			continue
+		}
+
+		// Envoyer au client via UDP
+		if _, err := s.conn.WriteToUDP(tunnelPkt, session.RemoteAddr); err != nil {
+			log.Printf("[tunLoop] Envoi UDP vers %s échoué : %v", clientID, err)
+			continue
+		}
+
+		// Comptabiliser le trafic sortant
+		s.sessions.AddBytesOut(clientID, uint64(n))
+	}
+}
+
+// parseSrcIP extrait l'adresse IP source d'un paquet IPv4.
+// Retourne nil si le paquet n'est pas un paquet IPv4 valide.
+func parseSrcIP(pkt []byte) net.IP {
+	if len(pkt) < 20 {
+		return nil
+	}
+
+	// Vérifier la version IP (4 bits haute du premier octet)
+	version := pkt[0] >> 4
+	if version != 4 {
+		return nil // IPv6 non supporté pour l'instant
+	}
+
+	// L'en-tête IPv4 fait au minimum 20 octets
+	ihl := int(pkt[0]&0x0F) * 4
+	if ihl < 20 || len(pkt) < ihl {
+		return nil
+	}
+
+	// L'adresse IP source est aux octets 12-15
+	return net.IP(pkt[12:16])
+}
+
+// parseDstIP extrait l'adresse IP destination d'un paquet IPv4.
+// Retourne nil si le paquet n'est pas un paquet IPv4 valide.
+func parseDstIP(pkt []byte) net.IP {
+	if len(pkt) < 20 {
+		return nil
+	}
+
+	// Vérifier la version IP (4 bits haute du premier octet)
+	version := pkt[0] >> 4
+	if version != 4 {
+		return nil // IPv6 non supporté pour l'instant
+	}
+
+	// L'en-tête IPv4 fait au minimum 20 octets
+	ihl := int(pkt[0]&0x0F) * 4
+	if ihl < 20 || len(pkt) < ihl {
+		return nil
+	}
+
+	// L'adresse IP destination est aux octets 16-19
+	return net.IP(pkt[16:20])
 }
 
 func (s *Server) handlePacket(
@@ -289,6 +431,17 @@ func (s *Server) handleControlPacket(
 		log.Printf("Challenge envoyé à %s", clientID)
 
 		return true
+
+	case "PING":
+		// Keepalive : maintient la session active et le mapping NAT côté
+		// client ouvert. La réponse PONG informe le client que le serveur
+		// est toujours joignable. Le PING est traité ici (avant le contrôle
+		// de session) afin de pouvoir répondre même si la session vient
+		// d'expirer — le client détectera alors l'absence de PONG.
+		if s.sessions.Touch(clientID) {
+			_, _ = s.conn.WriteToUDP([]byte("PONG"), client)
+		}
+		return true
 	}
 
 	const prefix = "AUTH "
@@ -358,15 +511,8 @@ func (s *Server) handleControlPacket(
 					return true
 				}
 
-				// Enregistrer l'adresse virtuelle dans la session.
-				s.sessions.mu.Lock()
-				if current, ok := s.sessions.sessions[clientID]; ok {
-					current.TunnelIP = append(
-						net.IP(nil),
-						tunnelIP...,
-					)
-				}
-				s.sessions.mu.Unlock()
+			// Enregistrer l'adresse virtuelle dans la session.
+			s.sessions.SetTunnelIP(clientID, tunnelIP)
 
 				_, _ = s.conn.WriteToUDP(
 					[]byte("AUTH_OK "+tunnelIP.String()),
@@ -432,6 +578,51 @@ func (s *Server) handleTunnelPacket(
 		return
 	}
 
+	// MODE VPN : écrire le paquet IP brut dans le TUN
+	if s.tun != nil {
+		// Anti-spoofing : l'adresse IP source du paquet doit correspondre
+		// à l'adresse tunnel allouée à cette session. Sans cette vérification,
+		// un client authentifié pourrait usurper l'IP d'un autre abonné.
+		if s.tunnelPool != nil {
+			srcIP := parseSrcIP(packet.Payload)
+			if srcIP == nil {
+				// Paquet non-IPv4 : rejeté en mode VPN
+				return
+			}
+
+			expectedIP, hasIP := s.sessions.TunnelIP(clientID)
+			if !hasIP || expectedIP == nil {
+				log.Printf(
+					"Tunnel refusé : pas d'IP allouée pour %s",
+					clientID,
+				)
+				return
+			}
+
+			if !srcIP.Equal(expectedIP) {
+				log.Printf(
+					"Tunnel refusé (spoofing) : %s émet depuis %s au lieu de %s",
+					clientID,
+					srcIP,
+					expectedIP,
+				)
+				return
+			}
+		}
+
+		s.sessions.AddBytesIn(clientID, uint64(len(packet.Payload)))
+
+		if _, err := s.tun.Write(packet.Payload); err != nil {
+			log.Printf(
+				"écriture TUN pour %s : %v",
+				clientID,
+				err,
+			)
+		}
+		return
+	}
+
+	// MODE PROXY TCP : forwarder vers le backend (comportement historique)
 	s.forwardToTCP(
 		client,
 		clientID,
@@ -681,6 +872,25 @@ func runServerContext(
 		}
 		server.tun = tun
 		log.Printf("TUN activé : %s (%s)", tun.Name(), config.TUN.Address)
+
+		// Configurer le réseau : adresse IP, forwarding, NAT, routes
+		netCfg := DefaultNetworkConfig()
+		netCfg.TUNName = tun.Name()
+		netCfg.TUNAddress = config.TUN.Address
+		if config.TUN.Address != "" {
+			// Extraire le CIDR réseau depuis l'adresse (ex: 10.77.0.1/24 → 10.77.0.0/24)
+			_, ipnet, parseErr := net.ParseCIDR(config.TUN.Address)
+			if parseErr == nil {
+				netCfg.VPNRange = ipnet.String()
+			}
+		}
+		cleanup, netErr := ConfigureNetwork(netCfg)
+		if netErr != nil {
+			log.Printf("Avertissement réseau : %v", netErr)
+			log.Println("Le serveur continue en mode dégradé (pas de NAT)")
+		} else {
+			defer cleanup()
+		}
 	} else {
 		log.Println("TUN désactivé.")
 	}

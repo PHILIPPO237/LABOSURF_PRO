@@ -273,6 +273,39 @@ func (sm *SessionManager) Admit(
 	return AdmitOK
 }
 
+// SetTunnelIP enregistre l'adresse IP virtuelle allouée à une session.
+// Retourne false si la session n'existe pas.
+func (sm *SessionManager) SetTunnelIP(clientID string, ip net.IP) bool {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	session, ok := sm.sessions[clientID]
+	if !ok {
+		return false
+	}
+
+	if ip == nil {
+		session.TunnelIP = nil
+		return true
+	}
+
+	session.TunnelIP = append(net.IP(nil), ip.To4()...)
+	return true
+}
+
+// TunnelIP retourne l'adresse IP virtuelle associée à une session.
+func (sm *SessionManager) TunnelIP(clientID string) (net.IP, bool) {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	session, ok := sm.sessions[clientID]
+	if !ok || session.TunnelIP == nil {
+		return nil, false
+	}
+
+	return append(net.IP(nil), session.TunnelIP...), true
+}
+
 func (sm *SessionManager) SetUserConfig(clientID string, config UserConfig) bool {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -483,21 +516,25 @@ func (sm *SessionManager) Remove(clientID string) {
 	delete(sm.sessions, clientID)
 }
 
-func (sm *SessionManager) Cleanup() {
+func (sm *SessionManager) Cleanup() []string {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
 	if sm.timeout <= 0 {
-		return
+		return nil
 	}
 
 	now := time.Now()
+	expired := make([]string, 0)
 
 	for clientID, session := range sm.sessions {
 		if now.Sub(session.LastActivity) > sm.timeout {
 			delete(sm.sessions, clientID)
+			expired = append(expired, clientID)
 		}
 	}
+
+	return expired
 }
 
 func (sm *SessionManager) Count() int {

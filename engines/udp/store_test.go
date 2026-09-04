@@ -195,6 +195,12 @@ func TestStoreUserConfigs(t *testing.T) {
 	s := newTempStore(t)
 	s.CreateAccount(Account{ID: "actif", Password: "p1", QuotaBytes: 10, MaxConnections: 2, MaxIPs: 3, Enabled: true})
 	s.CreateAccount(Account{ID: "inactif", Password: "p2", Enabled: false})
+	s.CreateAccount(Account{ID: "noudp", Password: "p3", Enabled: true})
+
+	// Un compte n'est autorisé sur UDP que s'il possède un grant UDP actif.
+	s.AddGrant("actif", EngineUDP, nil)
+	s.AddGrant("inactif", EngineUDP, nil)
+	// "noudp" n'a aucun grant : il ne doit PAS apparaître dans UserConfigs.
 
 	users := s.UserConfigs()
 
@@ -213,6 +219,10 @@ func TestStoreUserConfigs(t *testing.T) {
 	inactif, ok := users["inactif"]
 	if !ok || inactif.Enabled {
 		t.Fatalf("le compte désactivé doit apparaître avec Enabled=false : %+v", inactif)
+	}
+
+	if _, ok := users["noudp"]; ok {
+		t.Fatal("le compte sans grant UDP ne doit pas apparaître dans UserConfigs")
 	}
 }
 
@@ -271,6 +281,8 @@ func TestStoreSubscribeAppliesOfferParams(t *testing.T) {
 
 	s.CreateOffer(Offer{ID: "premium", DurationDays: 30, QuotaBytes: 2000, MaxConnections: 4, MaxIPs: 3})
 	s.CreateAccount(Account{ID: "client1", Enabled: true})
+	// Le compte doit avoir l'accès UDP pour apparaître dans UserConfigs.
+	s.AddGrant("client1", EngineUDP, nil)
 
 	acc, err := s.Subscribe("client1", "premium")
 	if err != nil {

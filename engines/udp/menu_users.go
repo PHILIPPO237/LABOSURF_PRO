@@ -207,18 +207,31 @@ func printClientCredentials(a Account) {
 	if a.QuotaBytes > 0 {
 		quota = FormatBytes(a.QuotaBytes)
 	}
+	srv := serverAddress()
 	fmt.Println("  ── 📋 FICHE CLIENT ───────────────────────────────")
-	fmt.Printf("  👤 UTILISATEUR    : %s\n", a.ID)
-	fmt.Printf("  🌐 ADRESSE SERVEUR: %s\n", serverAddress())
-	fmt.Printf("  🔐 MOT DE PASSE   : %s\n", a.Password)
-	fmt.Printf("  ⏳ EXPIRATION     : %s\n", exp)
-	fmt.Printf("  📊 QUOTA          : %s\n", quota)
-	fmt.Printf("  🔗 CONNEXIONS MAX : %d\n", a.MaxConnections)
-	fmt.Printf("  🌍 IP MAX         : %d\n", a.MaxIPs)
+	fmt.Println()
+	fmt.Println("  🔗 INFORMATIONS DE CONNEXION")
+	fmt.Printf("  ├─ Serveur       : %s\n", srv)
+	fmt.Printf("  ├─ Port UDP      : 5667\n")
+	fmt.Printf("  ├─ Protocole     : UDP\n")
+	fmt.Printf("  └─ Réseau VPN    : 10.77.0.0/24\n")
+	fmt.Println()
+	fmt.Println("  👤 IDENTIFIANTS")
+	fmt.Printf("  ├─ Utilisateur   : %s\n", a.ID)
+	fmt.Printf("  └─ Mot de passe  : %s\n", a.Password)
+	fmt.Println()
+	fmt.Println("  📊 LIMITES")
+	fmt.Printf("  ├─ Expiration    : %s\n", exp)
+	fmt.Printf("  ├─ Quota         : %s\n", quota)
+	fmt.Printf("  ├─ Connexions    : %d simultanée(s)\n", a.MaxConnections)
+	fmt.Printf("  └─ IPs max       : %d\n", a.MaxIPs)
 	if a.Token != "" {
-		fmt.Printf("  🌐 PORTAIL        : %s\n", formatLink("http://"+serverAddress()+":8080", a.Token))
+		fmt.Println()
+		fmt.Println("  🌐 PORTAIL")
+		fmt.Printf("  └─ Lien          : %s\n", formatLink("http://"+srv+":8080", a.Token))
 	}
-	fmt.Println("  ℹ️ UTILISEZ L'ADRESSE DU SERVEUR ET LE MOT DE PASSE DANS LE CLIENT COMPATIBLE.")
+	fmt.Println()
+	fmt.Println("  ℹ️ ENTREZ CES INFORMATIONS DANS VOTRE CLIENT VPN COMPATIBLE.")
 }
 
 func printStatisticsMenu() {
@@ -230,7 +243,19 @@ func printPortalMenu() {
 	pauseMenu()
 }
 func printServerStatusMenu() {
-	fmt.Println("\n  🖥️ ÉTAT DU SERVEUR — utilisez `systemctl status labosurf.service` pour le service système.")
+	srv := serverAddress()
+	fmt.Println()
+	fmt.Println("  ── 🖥️ ÉTAT DU SERVEUR ──────────────────────────────")
+	fmt.Printf("  Adresse publique : %s\n", srv)
+	fmt.Printf("  Port UDP         : 5667\n")
+	fmt.Printf("  Port portail     : 8080\n")
+	fmt.Printf("  Réseau VPN       : 10.77.0.0/24\n")
+	fmt.Printf("  TUN              : labosurf0 (10.77.0.1)\n")
+	fmt.Println()
+	fmt.Println("  Commandes utiles :")
+	fmt.Println("  • systemctl status labosurf   — état du service")
+	fmt.Println("  • journalctl -u labosurf -f   — logs en direct")
+	fmt.Println("  • ss -ulnp | grep 5667        — port UDP actif")
 	pauseMenu()
 }
 func printUpdateMenu() {

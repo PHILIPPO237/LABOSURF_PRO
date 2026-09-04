@@ -1,39 +1,18 @@
-//go:build !linux && !android
+//go:build !linux
 
 package main
 
-import "errors"
-
-var ErrTUNUnavailable = errors.New("TUN indisponible sur cette plateforme")
+import "fmt"
 
 type TUNDevice struct {
 	name string
 }
 
 func NewTUNDevice(name string) (*TUNDevice, error) {
-	if name == "" {
-		name = "labosurf0"
-	}
-
-	return &TUNDevice{name: name}, ErrTUNUnavailable
+	return nil, fmt.Errorf("TUN non disponible sur cette plateforme")
 }
 
-func (t *TUNDevice) Name() string {
-	if t == nil {
-		return ""
-	}
-
-	return t.name
-}
-
-func (t *TUNDevice) Read([]byte) (int, error) {
-	return 0, ErrTUNUnavailable
-}
-
-func (t *TUNDevice) Write([]byte) (int, error) {
-	return 0, ErrTUNUnavailable
-}
-
-func (t *TUNDevice) Close() error {
-	return nil
-}
+func (t *TUNDevice) Name() string        { return t.name }
+func (t *TUNDevice) Read(p []byte) (int, error)  { return 0, fmt.Errorf("TUN non disponible") }
+func (t *TUNDevice) Write(p []byte) (int, error) { return 0, fmt.Errorf("TUN non disponible") }
+func (t *TUNDevice) Close() error        { return nil }
