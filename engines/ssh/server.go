@@ -19,13 +19,13 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 )
 
-// applySysProcAttr configure le drop de privilèges vers l'utilisateur labosurf.
+// applySysProcAttr configure le drop de privilèges vers l'utilisateur labosurf (Linux).
 func applySysProcAttr(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Credential: &syscall.Credential{
-			// L'utilisateur 'labosurf' est créé par labosurf-pro.sh.
-			// Si absent, on reste en root (fallback).
-		},
+		// Note: Sur Linux, les UID/GID doivent être résolus à l'exécution.
+		// Pour l'instant, on laisse le processus en root et on recommande
+		// de lancer le service via systemd avec User=labosurf.
+		// TODO: Résoudre l'utilisateur 'labosurf' et appliquer Credential{Uid, Gid}.
 	}
 }
 

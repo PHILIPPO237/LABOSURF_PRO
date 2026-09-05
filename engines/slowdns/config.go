@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"net"
 	"os"
 	"strings"
 )
@@ -61,7 +60,7 @@ func encodeSubdomain(data []byte) string {
 }
 
 func decodeSubdomain(subdomain string) ([]byte, error) {
-cleaned := strings.ReplaceAll(subdomain, ".", "")
+	cleaned := strings.ReplaceAll(subdomain, ".", "")
 	cleaned = strings.ToUpper(cleaned)
 	return base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(cleaned)
 }
@@ -108,44 +107,10 @@ func buildDNSResponse(query []byte, answerData []byte) []byte {
 	return resp[:pos+10+len(answerData)]
 }
 
-func startTCPServer(addr string) (net.Listener, error) {
-	return net.Listen("tcp", addr)
-}
+func buildDNSResponseForPayload(sessionID string, payload []byte) []byte {
+	responseData := make([]byte, 16+len(payload))
+	copy(responseData[:16], []byte(sessionID)[:16])
+	copy(responseData[16:], payload)
 
-func handleTCPConn(conn net.Conn, backend string) {
-	defer conn.Close()
-	backendConn, err := net.Dial("tcp", backend)
-	if err != nil {
-		return
-	}
-	defer backendConn.Close()
-
-	done := make(chan struct{}, 2)
-	go func() {
-		buf := make([]byte, 32*1024)
-		for {
-			n, err := conn.Read(buf)
-			if n > 0 {
-				backendConn.Write(buf[:n])
-			}
-			if err != nil {
-				break
-			}
-		}
-		done <- struct{}{}
-	}()
-	go func() {
-		buf := make([]byte, 32*1024)
-		for {
-			n, err := backendConn.Read(buf)
-			if n > 0 {
-				conn.Write(buf[:n])
-			}
-			if err != nil {
-				break
-			}
-		}
-		done <- struct{}{}
-	}()
-	<-done
+	return buildDNSResponse(nil, responseData)
 }
