@@ -11,6 +11,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"labosurf/internal/store"
 )
 
 const (
@@ -30,9 +32,10 @@ type Server struct {
 	streams map[string]net.Conn
 
 	closeOnce sync.Once
+	store     *store.Store // pour persistance quota
 }
 
-func NewServer(config Config) (*Server, error) {
+func NewServer(config Config, st *store.Store) (*Server, error) {
 	addr, err := net.ResolveUDPAddr("udp", config.Listen)
 	if err != nil {
 		return nil, fmt.Errorf("adresse UDP invalide : %w", err)
@@ -66,6 +69,7 @@ func NewServer(config Config) (*Server, error) {
 		sessions:   NewSessionManager(sessionTimeout),
 		streams:    make(map[string]net.Conn),
 		tunnelPool: tunnelPool,
+		store:      st,
 	}, nil
 }
 
@@ -393,6 +397,16 @@ func (s *Server) denyTraffic(
 func (s *Server) removeSession(clientID string) {
 	if s == nil {
 		return
+	}
+
+	// Persister le quota consommé avant de supprimer la session.
+	if s.store != nil && s.sessions != nil {
+		if sess, ok := s.sessions.Get(clientID); ok {
+			total := sess.BytesIn + sess.BytesOut
+			if total > 0 {
+				_, _ = s.store.UpdateUsedBytes(sess.Username, int64(total))
+			}
+		}
 	}
 
 	if s.tunnelPool != nil {
@@ -858,7 +872,7 @@ func runServerContext(
 		)
 	}
 
-	server, err := NewServer(config)
+	server, err := NewServer(config, store)
 	if err != nil {
 		return err
 	}

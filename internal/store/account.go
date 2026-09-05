@@ -80,8 +80,8 @@ type Account struct {
 	// connecté à plusieurs moteurs simultanément.
 	Grants map[string]*EngineGrant `json:"grants,omitempty"`
 
-	// Données runtime (non persistées) — utilisées par le portail HTTP.
-	UsedBytes    int64    `json:"-"`
+	// Données runtime (persistées pour le quota).
+	UsedBytes    int64    `json:"used_bytes"`
 	CurrentConns int      `json:"-"`
 	CurrentIPs   []string `json:"-"`
 
@@ -109,13 +109,13 @@ func (a *Account) EngineGrants() []EngineGrant {
 	return out
 }
 
-// HasEngine indique si le compte a un accès (grant) vers le moteur donné.
+// HasEngine indique si le compte a un accès ACTIF (grant) vers le moteur donné.
 func (a *Account) HasEngine(engine string) bool {
 	if a.Grants == nil {
 		return false
 	}
-	_, ok := a.Grants[engine]
-	return ok
+	g, ok := a.Grants[engine]
+	return ok && g.Enabled
 }
 
 // LinkedEngines retourne la liste des moteurs auxquels le compte est rattaché.

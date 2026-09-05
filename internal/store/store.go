@@ -690,6 +690,57 @@ func (s *Store) GetByToken(token string) (Account, bool) {
 	return *acc, true
 }
 
+// UpdateUsedBytes met à jour atomiquement le compteur de trafic d'un compte
+// (incrément ou remplacement absolu). Retourne la nouvelle valeur.
+func (s *Store) UpdateUsedBytes(accountID string, delta int64) (int64, error) {
+	nid := normalizeID(accountID)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	acc, ok := s.data.Accounts[nid]
+	if !ok {
+		return 0, ErrAccountNotFound
+	}
+
+	acc.UsedBytes += delta
+	if acc.UsedBytes < 0 {
+		acc.UsedBytes = 0
+	}
+	acc.UpdatedAt = nowRFC3339()
+
+	if err := s.saveLocked(); err != nil {
+		return 0, err
+	}
+
+	return acc.UsedBytes, nil
+}
+
+// SetUsedBytes remplace directement la valeur du compteur de trafic.
+func (s *Store) SetUsedBytes(accountID string, value int64) (int64, error) {
+	nid := normalizeID(accountID)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	acc, ok := s.data.Accounts[nid]
+	if !ok {
+		return 0, ErrAccountNotFound
+	}
+
+	acc.UsedBytes = value
+	if acc.UsedBytes < 0 {
+		acc.UsedBytes = 0
+	}
+	acc.UpdatedAt = nowRFC3339()
+
+	if err := s.saveLocked(); err != nil {
+		return 0, err
+	}
+
+	return acc.UsedBytes, nil
+}
+
 // ClientLinkPath retourne le chemin du portail pour un token donné.
 func ClientLinkPath(token string) string {
 	return "/client/" + token

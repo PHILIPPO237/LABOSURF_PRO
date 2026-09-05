@@ -7,6 +7,8 @@ import (
 	"log"
 	"os"
 	"strings"
+
+	"labosurf/internal/store"
 )
 
 const engineVersion = "1.1.0"
@@ -70,7 +72,12 @@ func runUDPEngineModule() {
 		return
 	}
 
-	server, err := NewServer(config)
+	st, err := store.LoadStore(store.StorePath())
+	if err != nil {
+		fmt.Printf("Erreur chargement store : %v\n", err)
+		return
+	}
+	server, err := NewServer(config, st)
 	if err != nil {
 		fmt.Printf(
 			"\nImpossible de démarrer l'UDP Engine : %v\n",

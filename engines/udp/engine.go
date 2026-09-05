@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"labosurf/internal/engine"
+	"labosurf/internal/store"
 )
 
 // UDPServerEngine est le moteur UDP implémentant l'interface engine.Engine
@@ -17,6 +18,7 @@ type UDPServerEngine struct {
 	configPath string
 
 	server *Server
+	store  *store.Store
 	cancel context.CancelFunc
 	done   chan error
 }
@@ -84,7 +86,14 @@ func (e *UDPServerEngine) Start(ctx context.Context) error {
 		return fmt.Errorf("erreur de configuration : %w", err)
 	}
 
-	server, err := NewServer(config)
+	// Charger le store central pour la persistance quota.
+	st, err := store.LoadStore(store.StorePath())
+	if err != nil {
+		return fmt.Errorf("chargement store pour quota : %w", err)
+	}
+	e.store = st
+
+	server, err := NewServer(config, st)
 	if err != nil {
 		return fmt.Errorf("démarrage UDP Engine : %w", err)
 	}

@@ -85,6 +85,10 @@ func (a *AuthManager) ReloadFromStore(path string) error {
 	}
 	users := make(map[string]AuthUser)
 	for _, acc := range s.ListAccounts() {
+		// Seuls les comptes avec un grant UDP ACTIF peuvent s'authentifier.
+		if !acc.HasEngine("udp") {
+			continue
+		}
 		if !acc.Enabled || acc.Password == "" || userConfigExpired(UserConfig{ExpiresAt: acc.ExpiresAt}, time.Now()) {
 			continue
 		}
