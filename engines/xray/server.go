@@ -2,8 +2,6 @@ package xray
 
 import (
 	"context"
-	"crypto/cipher"
-	"crypto/md5"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -19,9 +17,7 @@ import (
 const (
 	defaultXrayPort = 443
 	ProtocolVLESS   = "vless"
-	ProtocolVMess   = "vmess"
 	ProtocolTrojan  = "trojan"
-	ProtocolShadowsocks = "shadowsocks"
 )
 
 type XrayConfig struct {
@@ -31,12 +27,11 @@ type XrayConfig struct {
 }
 
 type XrayUser struct {
-	ID      string `json:"id"`
-	Email   string `json:"email"`
-	Flow    string `json:"flow"`
-	Enabled bool   `json:"enabled"`
+	ID       string `json:"id"`
+	Email    string `json:"email"`
+	Flow     string `json:"flow"`
+	Enabled  bool   `json:"enabled"`
 	Password string `json:"password,omitempty"`
-	Method  string `json:"method,omitempty"`
 }
 
 type XraySession struct {
@@ -138,36 +133,26 @@ func (s *XrayServer) handleConn(ctx context.Context, conn net.Conn) {
 	switch s.config.Protocol {
 	case ProtocolVLESS:
 		s.handleVLESS(conn)
-	case ProtocolVMess:
-		s.handleVMess(conn)
 	case ProtocolTrojan:
 		s.handleTrojan(conn)
-	case ProtocolShadowsocks:
-		s.handleShadowsocks(conn)
 	default:
-		log.Printf("Xray : protocole inconnu : %s", s.config.Protocol)
+		log.Printf("Xray : protocole non supporté : %s", s.config.Protocol)
 	}
 }
 
 func (s *XrayServer) handleVLESS(conn net.Conn) {
 	conn.SetReadDeadline(time.Now().Add(15 * time.Second))
 
-	header := make([]byte, 1)
-	if _, err := io.ReadFull(conn, header); err != nil {
+	// Version (1 byte) - VLESS uses version 0
+	version := make([]byte, 1)
+	if _, err := io.ReadFull(conn, version); err != nil {
 		return
 	}
-	if header[0] != 0 {
-		return
-	}
-
-	uuidLen := make([]byte, 1)
-	if _, err := io.ReadFull(conn, uuidLen); err != nil {
-		return
-	}
-	if uuidLen[0] != 16 {
+	if version[0] != 0 {
 		return
 	}
 
+	// UUID (16 bytes raw, no length prefix)
 	uuidBytes := make([]byte, 16)
 	if _, err := io.ReadFull(conn, uuidBytes); err != nil {
 		return
@@ -180,39 +165,47 @@ func (s *XrayServer) handleVLESS(conn net.Conn) {
 		return
 	}
 
-	addon := make([]byte, 1)
-	if _, err := io.ReadFull(conn, addon); err != nil {
-		return
-	}
-
-	cmd := make([]byte, 16)
+	// Command (1 byte): 1=TCP, 2=UDP, 3=MUX
+	cmd := make([]byte, 1)
 	if _, err := io.ReadFull(conn, cmd); err != nil {
 		return
 	}
-
 	if cmd[0] != 1 {
+		return // Only TCP supported
+	}
+
+	// Port (2 bytes big endian)
+	portBytes := make([]byte, 2)
+	if _, err := io.ReadFull(conn, portBytes); err != nil {
+		return
+	}
+	port := binary.BigEndian.Uint16(portBytes)
+
+	// Address type (1 byte): 1=IPv4, 2=Domain, 3=IPv6
+	addrType := make([]byte, 1)
+	if _, err := io.ReadFull(conn, addrType); err != nil {
 		return
 	}
 
-	port := binary.BigEndian.Uint16(cmd[1:3])
-	addrType := cmd[3]
-
 	var host string
-	switch addrType {
-	case 1:
+	switch addrType[0] {
+	case 1: // IPv4
 		ip := make([]byte, 4)
 		if _, err := io.ReadFull(conn, ip); err != nil {
 			return
 		}
 		host = net.IP(ip).String()
-	case 2:
-		dlen := int(cmd[4])
-		domain := make([]byte, dlen)
+	case 2: // Domain
+		dlen := make([]byte, 1)
+		if _, err := io.ReadFull(conn, dlen); err != nil {
+			return
+		}
+		domain := make([]byte, dlen[0])
 		if _, err := io.ReadFull(conn, domain); err != nil {
 			return
 		}
 		host = string(domain)
-	case 3:
+	case 3: // IPv6
 		ip := make([]byte, 16)
 		if _, err := io.ReadFull(conn, ip); err != nil {
 			return
@@ -221,6 +214,8 @@ func (s *XrayServer) handleVLESS(conn net.Conn) {
 	default:
 		return
 	}
+
+	// Optional: skip extensions for command 1 (not needed for basic TCP)
 
 	conn.SetReadDeadline(time.Time{})
 
@@ -247,44 +242,12 @@ func (s *XrayServer) handleVLESS(conn net.Conn) {
 	}
 	defer backend.Close()
 
-	log.Printf("✔ Xray : %s → %s (via %s)", user.Email, target, conn.RemoteAddr())
+	log.Printf("✔ Xray VLESS : %s → %s (via %s)", user.Email, target, conn.RemoteAddr())
 
 	done := make(chan struct{}, 2)
 	go pipeConn(conn, backend, &sess.BytesIn, done)
 	go pipeConn(backend, conn, &sess.BytesOut, done)
 	<-done
-}
-
-func (s *XrayServer) handleVMess(conn net.Conn) {
-	conn.SetReadDeadline(time.Now().Add(15 * time.Second))
-
-	ver := make([]byte, 1)
-	if _, err := io.ReadFull(conn, ver); err != nil {
-		return
-	}
-	_ = ver
-
-	ivLen := make([]byte, 1)
-	if _, err := io.ReadFull(conn, ivLen); err != nil {
-		return
-	}
-	iv := make([]byte, ivLen[0])
-	if _, err := io.ReadFull(conn, iv); err != nil {
-		return
-	}
-
-	keyLen := make([]byte, 1)
-	if _, err := io.ReadFull(conn, keyLen); err != nil {
-		return
-	}
-	key := make([]byte, keyLen[0])
-	if _, err := io.ReadFull(conn, key); err != nil {
-		return
-	}
-
-	_ = key
-	_ = iv
-	s.handleFallbackProxy(conn)
 }
 
 func (s *XrayServer) handleTrojan(conn net.Conn) {
@@ -394,68 +357,6 @@ func (s *XrayServer) handleTrojan(conn net.Conn) {
 	<-done
 }
 
-func (s *XrayServer) handleShadowsocks(conn net.Conn) {
-	s.handleFallbackProxy(conn)
-}
-
-func (s *XrayServer) handleFallbackProxy(conn net.Conn) {
-	conn.SetReadDeadline(time.Now().Add(15 * time.Second))
-
-	addrType := make([]byte, 1)
-	if _, err := io.ReadFull(conn, addrType); err != nil {
-		return
-	}
-
-	var host string
-	switch addrType[0] {
-	case 1:
-		ip := make([]byte, 4)
-		if _, err := io.ReadFull(conn, ip); err != nil {
-			return
-		}
-		host = net.IP(ip).String()
-	case 2:
-		dlen := make([]byte, 1)
-		if _, err := io.ReadFull(conn, dlen); err != nil {
-			return
-		}
-		domain := make([]byte, dlen[0])
-		if _, err := io.ReadFull(conn, domain); err != nil {
-			return
-		}
-		host = string(domain)
-	case 3:
-		ip := make([]byte, 16)
-		if _, err := io.ReadFull(conn, ip); err != nil {
-			return
-		}
-		host = net.IP(ip).String()
-	default:
-		return
-	}
-
-	portBytes := make([]byte, 2)
-	if _, err := io.ReadFull(conn, portBytes); err != nil {
-		return
-	}
-	port := binary.BigEndian.Uint16(portBytes)
-
-	conn.SetReadDeadline(time.Time{})
-
-	target := net.JoinHostPort(host, strconv.Itoa(int(port)))
-	backend, err := net.Dial("tcp", target)
-	if err != nil {
-		log.Printf("Proxy : impossible de joindre %s : %v", target, err)
-		return
-	}
-	defer backend.Close()
-
-	done := make(chan struct{}, 2)
-	go pipeConn(conn, backend, nil, done)
-	go pipeConn(backend, conn, nil, done)
-	<-done
-}
-
 func formatUUID(b []byte) string {
 	if len(b) != 16 {
 		return ""
@@ -463,13 +364,6 @@ func formatUUID(b []byte) string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x",
 		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
-
-func md5sum(data []byte) []byte {
-	h := md5.Sum(data)
-	return h[:]
-}
-
-var _ cipher.Stream
 
 func pipeConn(src, dst net.Conn, counter *int64, done chan struct{}) {
 	buf := make([]byte, 32*1024)
