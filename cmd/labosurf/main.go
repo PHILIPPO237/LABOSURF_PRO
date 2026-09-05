@@ -1,10 +1,5 @@
 // Command labosurf est le point d'entrée unique de la plateforme
 // LABOSURF PRO. Il expose la gestion multi-moteurs via internal/engine.
-//
-// Pendant la migration, ce binaire est un *gestionnaire* : il découvre les
-// moteurs enregistrés (grâce au registre) et délègue au moteur UDP. La
-// logique historique (serveur, admin, licences, portail) reste dans
-// engines/udp et est accessible via ses sous-commandes existantes.
 package main
 
 import (
@@ -14,6 +9,7 @@ import (
 
 	"labosurf/internal/engine"
 	"labosurf/internal/engineutil"
+	"labosurf/internal/license"
 
 	// Imports d'enregistrement (init) des moteurs dans le registre.
 	_ "labosurf/engines/dnstt"
@@ -65,8 +61,10 @@ func runEngineCmd(args []string) error {
 		return stopEngine(args)
 	case "restart":
 		return restartEngine(args)
+	case "license":
+		return runLicenseCmd(args[1:])
 	default:
-		return fmt.Errorf("commande inconnue : %s (utilisez list, status, start, stop, restart)", args[0])
+		return fmt.Errorf("commande inconnue : %s (utilisez list, status, start, stop, restart, license)", args[0])
 	}
 }
 
@@ -110,6 +108,10 @@ func startEngine(args []string) error {
 	if len(args) < 2 {
 		return fmt.Errorf("usage : engine start <name>")
 	}
+	// Vérifier la licence avant de démarrer un moteur
+	if err := license.VerifyPlatformLicense(); err != nil {
+		return fmt.Errorf("licence invalide : %w", err)
+	}
 	e, err := engine.Get(args[1])
 	if err != nil {
 		return err
@@ -143,7 +145,28 @@ func printRootUsage() {
 	fmt.Println("  labosurf engine start <name>         démarrer un moteur")
 	fmt.Println("  labosurf engine stop <name>          arrêter un moteur")
 	fmt.Println("  labosurf engine restart <name>       redémarrer un moteur")
+	fmt.Println("  labosurf engine license <cmd>        gérer la licence")
 	fmt.Println()
 	fmt.Println("Moteurs historiques (binaire engines/udp) :")
 	fmt.Println("  labosurf udp server -c config.json   serveur UDP Engine")
+}
+
+func runLicenseCmd(args []string) error {
+	if len(args) == 0 {
+		fmt.Println("Usage : labosurf engine license <activate|status|verify>")
+		return nil
+	}
+	switch args[0] {
+	case "activate":
+		if len(args) < 2 {
+			return fmt.Errorf("usage : license activate <token>")
+		}
+		return license.Activate(args[1])
+	case "status":
+		return license.Status()
+	case "verify":
+		return license.Verify()
+	default:
+		return fmt.Errorf("commande licence inconnue : %s", args[0])
+	}
 }
