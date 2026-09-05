@@ -372,9 +372,10 @@ func buildGroupedConfig(engineName string, accounts []store.Account, prof srvcfg
 				continue
 			}
 			sshUsers = append(sshUsers, map[string]any{
-				"username":   a.Username,
-				"public_key": key,
-				"enabled":    a.Enabled,
+				"username":    a.Username,
+				"public_key":  key,
+				"enabled":     a.Enabled,
+				"expires_at":  a.ExpiresAt,
 			})
 		}
 		return marshal(map[string]any{

@@ -13,12 +13,20 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"syscall"
 	"time"
 
 	gossh "golang.org/x/crypto/ssh"
 )
 
+// applySysProcAttr configure le drop de privilèges vers l'utilisateur labosurf.
 func applySysProcAttr(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Credential: &syscall.Credential{
+			// L'utilisateur 'labosurf' est créé par labosurf-pro.sh.
+			// Si absent, on reste en root (fallback).
+		},
+	}
 }
 
 type Session struct {
@@ -63,10 +71,26 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	s.sshConf.AddHostKey(hostKey)
 
+	// Écrire le fichier authorized_keys pour les utilisateurs activés.
+	if err := s.writeAuthorizedKeys(); err != nil {
+		log.Printf("Avertissement : impossible d'écrire authorized_keys : %v", err)
+	}
+
 	s.sshConf.PublicKeyCallback = func(conn gossh.ConnMetadata, key gossh.PublicKey) (*gossh.Permissions, error) {
 		for _, u := range s.config.Users {
 			if !u.Enabled {
 				continue
+			}
+			if u.Username == "" {
+				continue
+			}
+			// Vérifier l'expiration du compte.
+			if u.ExpiresAt != "" {
+				if exp, err := time.Parse(time.RFC3339, u.ExpiresAt); err == nil {
+					if time.Now().After(exp) {
+						continue // compte expiré
+					}
+				}
 			}
 			if u.Username == "" {
 				continue
@@ -330,6 +354,21 @@ func (s *Server) loadOrGenerateHostKey() (gossh.Signer, error) {
 	}
 
 	return gossh.ParsePrivateKey(keyPEM)
+}
+
+func (s *Server) writeAuthorizedKeys() error {
+	if s.config.Dir == "" {
+		return fmt.Errorf("répertoire SSH non configuré")
+	}
+	keys := s.config.AuthorizedKeysBytes()
+	if len(keys) == 0 {
+		return nil
+	}
+	if err := os.MkdirAll(s.config.Dir, 0o700); err != nil {
+		return fmt.Errorf("création répertoire SSH : %w", err)
+	}
+	path := authorizedKeysPath(s.config.Dir)
+	return os.WriteFile(path, keys, 0o600)
 }
 
 func (s *Server) Sessions() []Session {

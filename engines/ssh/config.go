@@ -17,14 +17,14 @@ const (
 type SSHConfig struct {
 	Port  int        `json:"port"`
 	Users []SSHUser  `json:"users"`
-	Dir   string     `json:"-"`
+	Dir   string     `json:"dir"`
 }
 
 type SSHUser struct {
-	Username  string `json:"username"`
-	PublicKey string `json:"public_key"`
-	Password  string `json:"password,omitempty"`
-	Enabled   bool   `json:"enabled"`
+	Username   string `json:"username"`
+	PublicKey  string `json:"public_key"`
+	Enabled    bool   `json:"enabled"`
+	ExpiresAt  string `json:"expires_at,omitempty"`
 }
 
 func loadSSHConfig(path string) (SSHConfig, error) {
