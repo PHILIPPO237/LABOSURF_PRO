@@ -5,6 +5,11 @@ on:
     tags:
       - 'v*.*.*'
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version de la release (ex: v1.0.0). Vide = branche actuelle'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -19,54 +24,61 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23.x'
-          cache-dependency-path: engines/udp/go.sum
+          go-version: '1.26.x'
+          cache-dependency-path: |
+            go.sum
+            engines/udp/go.sum
 
       - name: Tests
         run: |
+          set -euo pipefail
+          go vet ./...
           go test ./internal/...
           go build ./...
-          (cd engines/udp && go test ./...)
+          (cd engines/udp && go vet ./... && go test ./...)
 
       - name: Read public verification key
         id: key
         run: |
+          set -euo pipefail
           KEY_FILE="release/license_pub.key"
           if [[ ! -f "$KEY_FILE" ]]; then
-            # Fallback: copier depuis engines/udp/ si release/ pas encore à jour
             KEY_FILE="engines/udp/labosurf_pub.key"
           fi
-          test -f "$KEY_FILE" || { echo "Fichier clé publique introuvable (release/license_pub.key ou engines/udp/labosurf_pub.key)."; exit 1; }
+          test -f "$KEY_FILE" || { echo "Clé publique introuvable (release/license_pub.key ou engines/udp/labosurf_pub.key)."; exit 1; }
           PUBKEY="$(tr -d '[:space:]' < "$KEY_FILE")"
           test "${#PUBKEY}" -eq 64 || { echo "Clé publique invalide (${#PUBKEY} caractères, 64 attendus)."; exit 1; }
-          echo "$PUBKEY" > license_pub.key
           echo "PUBKEY=${PUBKEY}" >> "$GITHUB_OUTPUT"
 
-      - name: Build Linux binaries
+      - name: Build UDP engine binaries
         env:
           PUBKEY: ${{ steps.key.outputs.PUBKEY }}
         run: |
+          set -euo pipefail
           mkdir -p dist
           cd engines/udp
+          for goos_arch in linux/amd64 linux/arm64 android/arm64; do
+            GOOS="${goos_arch%/*}"; GOARCH="${goos_arch#*/}"
+            CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
+              go build -trimpath \
+              -ldflags "-X main.embeddedVerifyKeyHex=${PUBKEY}" \
+              -o "../../dist/labosurf-${GOOS}-${GOARCH}" .
+          done
 
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64             go build -trimpath             -ldflags "-X main.embeddedVerifyKeyHex=${PUBKEY}"             -o ../../dist/labosurf-linux-amd64 .
-
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64             go build -trimpath             -ldflags "-X main.embeddedVerifyKeyHex=${PUBKEY}"             -o ../../dist/labosurf-linux-arm64 .
-
-          # Binaire Android/ARM64 pour une utilisation en local sous Termux
-          # (menu admin, gestion des comptes, licences directement sur le
-          # téléphone). CGO désactivé : pas besoin du NDK Android.
-          CGO_ENABLED=0 GOOS=android GOARCH=arm64             go build -trimpath             -ldflags "-X main.embeddedVerifyKeyHex=${PUBKEY}"             -o ../../dist/labosurf-android-arm64 .
-
-          cp ../../license_pub.key ../../dist/license_pub.key
-
-          cd ../../dist
-          sha256sum labosurf-linux-* labosurf-android-* license_pub.key > SHA256SUMS
-
-      - name: Build engine binaries
+      - name: Build manager and engine binaries
         run: |
+          set -euo pipefail
           cd "${{ github.workspace }}"
           mkdir -p dist
+          # Gestionnaire multi-moteurs (cmd/labosurf)
+          for goos_arch in linux/amd64 linux/arm64 android/arm64; do
+            GOOS="${goos_arch%/*}"; GOARCH="${goos_arch#*/}"
+            CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
+              go build -trimpath \
+              -o "dist/labosurf-mgr-${GOOS}-${GOARCH}" \
+              ./cmd/labosurf
+          done
+          # Moteurs autonomes (cmd/labosurf-<name>)
           ENGINES="xray slowdns dnstt hysteria udp ssh"
           for name in $ENGINES; do
             for goos_arch in linux/amd64 linux/arm64 android/arm64; do
@@ -77,9 +89,49 @@ jobs:
                 "./cmd/labosurf-${name}"
             done
           done
+
+      - name: Copy public key and checksums
+        env:
+          PUBKEY: ${{ steps.key.outputs.PUBKEY }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${PUBKEY}" > dist/license_pub.key
+          cp "${{ github.workspace }}/release/license_pub.key.example" dist/license_pub.key.example
           cd dist
-          sha256sum labosurf-*-linux-* labosurf-*-android-* > SHA256SUMS.engines
+          sha256sum * > SHA256SUMS
+
+      - name: Verify artifacts
+        run: |
+          set -euo pipefail
+          cd "${{ github.workspace }}/dist"
+          for goos_arch in linux/amd64 linux/arm64 android/arm64; do
+            GOOS="${goos_arch%/*}"; GOARCH="${goos_arch#*/}"
+            test -f "labosurf-${GOOS}-${GOARCH}" || { echo "MANQUANT labosurf-${GOOS}-${GOARCH}"; exit 1; }
+            test -f "labosurf-mgr-${GOOS}-${GOARCH}" || { echo "MANQUANT labosurf-mgr-${GOOS}-${GOARCH}"; exit 1; }
+            for name in xray slowdns dnstt hysteria udp ssh; do
+              test -f "labosurf-${name}-${GOOS}-${GOARCH}" || { echo "MANQUANT labosurf-${name}-${GOOS}-${GOARCH}"; exit 1; }
+            done
+          done
+          # Format ELF pour les binaires Linux à la place des artefacts exécutables
+          files=$(find . -maxdepth 1 -type f ! -name '*.key' ! -name '*.example' ! -name 'SHA256SUMS')
+          echo "$files" | xargs file | grep -E 'ELF' >/dev/null
+          echo "Tous les artefacts attendus sont présents."
+          cat SHA256SUMS
+
+      - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" dist/* --generate-notes --title "LABOSURF PRO ${GITHUB_REF_NAME}"
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            RELEASE_TAG="${GITHUB_REF_NAME}"
+          else
+            RELEASE_TAG="${INPUT_VERSION}"
+            if [[ -z "$RELEASE_TAG" ]]; then
+              RELEASE_TAG="dev-$(date +%Y%m%d-%H%M%S)"
+            fi
+          fi
+          echo "Création de la release: ${RELEASE_TAG}"
+          gh release create "${RELEASE_TAG}" dist/* \
+            --generate-notes \
+            --title "LABOSURF PRO ${RELEASE_TAG}"

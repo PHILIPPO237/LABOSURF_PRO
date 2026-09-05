@@ -10,6 +10,10 @@ config.local.json
 labosurf_admin.key
 .labosurf_admin.key
 
+# Clés publiques de vérification de licence (non secrètes, trackées)
+!release/license_pub.key
+!engines/udp/labosurf_pub.key
+
 # Temporaires / logs / sauvegardes
 *.tmp
 *.log
