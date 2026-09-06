@@ -531,30 +531,37 @@ main() {
   require_root
   print_intro
 
-  # ── [1/8] Système ──────────────────────────────────────
+  # ── [1/9] Système ──────────────────────────────────────
   step_begin 1 'Vérification du système'
   check_os
   step_ok "Système Linux détecté ($(source /etc/os-release && echo "${PRETTY_NAME:-$ID}"))"
 
-  # ── [2/8] Dépendances ──────────────────────────────────
+  # ── [2/9] Dépendances ──────────────────────────────────
   step_begin 2 'Préparation des dépendances'
   run_step 'Installation des composants système...' install_deps
 
-  # ── [3/8] Réseau ───────────────────────────────────────
+  # ── [3/9] Réseau ───────────────────────────────────────
   step_begin 3 'Configuration réseau (TUN, NAT, forwarding)'
   run_step 'Activation du tunnel et des règles réseau...' setup_network
 
-  # ── [4/8] Répertoires ──────────────────────────────────
+  # ── [4/9] Répertoires ──────────────────────────────────
   step_begin 4 'Préparation des répertoires'
   run_step "Création de l'environnement LABOSURF PRO..." prepare_dirs
 
-  # ── [5/9] Binaire gestionnaire ─────────────────────────
-  step_begin 5 'Déploiement du binaire gestionnaire'
+  # ── [5/9] Licence ──────────────────────────────────────
+  step_begin 5 'Sécurisation de la licence'
+  run_step 'Installation de la clé publique...' fetch_public_key
+  step_ok 'Clé publique installée'
+  activate_license
+  step_ok 'Licence activée'
+
+  # ── [6/9] Binaire gestionnaire ─────────────────────────
+  step_begin 6 'Déploiement du binaire gestionnaire'
   run_step "Téléchargement du gestionnaire..." download_asset "labosurf" "$BIN_PATH"
   step_ok "Gestionnaire installé pour $(uname -m)"
 
-  # ── [6/9] Moteurs ──────────────────────────────────────
-  step_begin 6 'Installation des moteurs'
+  # ── [7/9] Moteurs ──────────────────────────────────────
+  step_begin 7 'Installation des moteurs'
   select_engines
   info "Moteurs sélectionnés : ${SELECTED_ENGINES}"
   for eng in $SELECTED_ENGINES; do
@@ -574,13 +581,6 @@ main() {
     systemctl restart "labosurf-${eng}.service"
     step_ok "Moteur ${eng} installé"
   done
-
-  # ── [7/9] Licence ──────────────────────────────────────
-  step_begin 7 'Sécurisation de la licence'
-  run_step 'Installation de la clé publique...' fetch_public_key
-  step_ok 'Clé publique installée'
-  activate_license
-  step_ok 'Licence activée'
 
   # ── [8/9] Service ──────────────────────────────────────
   step_begin 8 'Configuration du service'
