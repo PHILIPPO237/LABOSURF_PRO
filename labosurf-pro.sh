@@ -54,7 +54,7 @@ term_width() {
 }
 
 center() {
-  local text="$1" width="$2" pad
+  local text="${1:-}" width="${2:-80}" pad
   pad=$(( (width - ${#text}) / 2 ))
   (( pad < 0 )) && pad=0
   printf '%*s%s\n' "$pad" '' "$text"
@@ -62,7 +62,11 @@ center() {
 
 # ── Box drawing ────────────────────────────────────────────
 box_line() {
-  local content="$1" width="$2" inner=$((width - 4))
+  local content="${1:-}"
+  local width="${2:-}"
+  [[ -z "$width" ]] && width=80
+  local inner=$((width - 4))
+  (( inner < 0 )) && inner=0
   local pad=$(( (inner - ${#content}) / 2 ))
   (( pad < 0 )) && pad=0
   local rpad=$(( inner - pad - ${#content} ))
@@ -71,7 +75,7 @@ box_line() {
 }
 
 box() {
-  local w="$1"; shift
+  local w="${1:-80}"; shift
   local line
   line="$(printf '─%.0s' $(seq 1 $((w - 4))))"
   printf '┌%s┐\n' "$line"
