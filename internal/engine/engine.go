@@ -10,6 +10,49 @@ package engine
 
 import "context"
 
+// EngineErrorCode représente un code d'erreur standardisé pour les moteurs.
+type EngineErrorCode string
+
+const (
+	// Erreurs de configuration
+	ErrCodeConfigInvalid      EngineErrorCode = "CONFIG_INVALID"
+	ErrCodeConfigMissing      EngineErrorCode = "CONFIG_MISSING"
+	ErrCodeConfigVersion      EngineErrorCode = "CONFIG_VERSION_MISMATCH"
+
+	// Erreurs de démarrage
+	ErrCodeBinaryNotFound     EngineErrorCode = "BINARY_NOT_FOUND"
+	ErrCodeBinaryNotExec      EngineErrorCode = "BINARY_NOT_EXECUTABLE"
+	ErrCodeBuildFailed        EngineErrorCode = "BUILD_FAILED"
+	ErrCodeStartFailed        EngineErrorCode = "START_FAILED"
+	ErrCodeProcessExited      EngineErrorCode = "PROCESS_EXITED"
+	ErrCodePortNotListening   EngineErrorCode = "PORT_NOT_LISTENING"
+
+	// Erreurs d'authentification
+	ErrCodeAuthFailed         EngineErrorCode = "AUTH_FAILED"
+	ErrCodeLicenseInvalid     EngineErrorCode = "LICENSE_INVALID"
+	ErrCodeLicenseExpired     EngineErrorCode = "LICENSE_EXPIRED"
+	ErrCodeLicenseMissing     EngineErrorCode = "LICENSE_MISSING"
+
+	// Erreurs réseau
+	ErrCodePortInUse          EngineErrorCode = "PORT_IN_USE"
+	ErrCodeBindFailed         EngineErrorCode = "BIND_FAILED"
+	ErrCodeNetworkUnreachable EngineErrorCode = "NETWORK_UNREACHABLE"
+	ErrCodeTimeout            EngineErrorCode = "TIMEOUT"
+
+	// Erreurs de santé
+	ErrCodeHealthCheckFailed  EngineErrorCode = "HEALTH_CHECK_FAILED"
+	ErrCodeEngineUnreachable  EngineErrorCode = "ENGINE_UNREACHABLE"
+	ErrCodeTrafficTestFailed  EngineErrorCode = "TRAFFIC_TEST_FAILED"
+
+	// Erreurs de permission
+	ErrCodePermissionDenied   EngineErrorCode = "PERMISSION_DENIED"
+	ErrCodeRootRequired       EngineErrorCode = "ROOT_REQUIRED"
+
+	// Erreurs génériques
+	ErrCodeInternalError      EngineErrorCode = "INTERNAL_ERROR"
+	ErrCodeUnknown            EngineErrorCode = "UNKNOWN"
+)
+
 // EngineStatus décrit l'état courant d'un moteur.
 type EngineStatus struct {
 	// Installed indique si le moteur est installé sur le système.
@@ -21,11 +64,26 @@ type EngineStatus struct {
 	// PID est l'identifiant du processus du moteur (0 si non démarré).
 	PID int
 
+	// Port est le port d'écoute du moteur (0 si inconnu).
+	Port int
+
+	// ListenAddr est l'adresse d'écoute complète (ex: "0.0.0.0:443").
+	ListenAddr string
+
 	// Uptime est la durée de fonctionnement actuelle (vide si arrêté).
 	Uptime string
 
+	// Health indique l'état de santé : "healthy", "degraded", "unhealthy", "unknown".
+	Health string
+
+	// ErrorCode est le code d'erreur standardisé si le moteur est en erreur.
+	ErrorCode EngineErrorCode
+
 	// Error porte un éventuel message d'erreur de l'état.
 	Error string
+
+	// StartedAt est l'heure de démarrage du moteur (RFC3339).
+	StartedAt string
 }
 
 // InstallConfig regroupe les paramètres nécessaires à l'installation
