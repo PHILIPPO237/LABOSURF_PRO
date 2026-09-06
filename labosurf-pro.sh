@@ -19,6 +19,7 @@ MACHINE_PATH="${CONFIG_DIR}/machine.id"
 LICENSE_REGISTRY_PATH="${CONFIG_DIR}/licenses.json"
 GITHUB_REPO="PHILIPPO237/LABOSURF_PRO"
 GITHUB_RELEASE="https://github.com/${GITHUB_REPO}/releases/latest/download"
+export BIN_PATH CONFIG_DIR GITHUB_REPO GITHUB_RELEASE
 
 # Moteurs autonomes (binaires LABOSURF qui supervisent le vrai moteur tierce).
 # chumo_engines : chaque binaire `labosurf-<name>` télécharge/déploie (SHA-256)
