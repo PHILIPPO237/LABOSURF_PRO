@@ -100,6 +100,25 @@ git push
 
 ## Installation VPS (post-release)
 
+### OS supportés pour l'installation VPS
+
+| Distribution | Statut | Gestionnaire de paquets | Notes |
+|--------------|--------|------------------------|-------|
+| **Ubuntu** 20.04, 22.04, 24.04+ | ✅ Officiel | apt | Testé en CI (24.04) |
+| **Debian** 11 (Bullseye), 12 (Bookworm) | ✅ Officiel | apt | |
+| **Linux Mint** 20, 21+ | ✅ Officiel | apt | Basé sur Ubuntu LTS |
+| **Raspberry Pi OS** (Raspbian) | ✅ Officiel | apt | ARM64/ARMHF |
+| **Debian-based dérivées** (Pop!_OS, Elementary, etc.) | ✅ Compatible | apt | Hérite de Debian/Ubuntu |
+
+| Distribution | Statut | Note |
+|--------------|--------|------|
+| CentOS / RHEL / Rocky / AlmaLinux | ⚠️ Expérimental | Utilise `dnf`/`yum` — non testé, installation `apt` échouera |
+| Fedora | ⚠️ Expérimental | Utilise `dnf` — non testé |
+| Alpine Linux | ❌ Non supporté | Utilise `apk` + `musl libc` |
+| Arch Linux / Manjaro | ❌ Non supporté | Utilise `pacman` |
+
+> **Note** : Le script d'installation utilise `apt` et `systemd`. Pour les distributions non-Debian, l'installation **échouera**.
+
 ### Script automatique
 ```bash
 curl -fsSL https://raw.githubusercontent.com/PHILIPPO237/LABOSURF_PRO/main/labosurf-pro.sh | sudo bash
