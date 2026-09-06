@@ -29,11 +29,12 @@ labosurf-linux-amd64
 dist/
 
 # Binaires locaux compilés sans extension (go build -o ...)
-/labosurf
-/engine
-/labosurf-mgr.exe
-/engines/udp/labosurf
-/engines/udp/labosurf-server
+ /labosurf
+ /engine
+ /labosurf-mgr.exe
+ /engines/udp/labosurf
+ /engines/udp/labosurf-server
+ /engines/udp/engine
 /engines/udp/coverage
 /coverage.out
 
