@@ -294,7 +294,8 @@ arch_suffix() {
 # release, puis l'installe à la destination donnée.
 # Usage : download_asset <baseAssetName> <destinationPath>
 download_asset() {
-  local base="$1" dest="$2" suffix asset tmp="${dest}.new" sums="${dest}.sums"
+  local base="$1" dest="$2"
+  local suffix asset tmp="${dest}.new" sums="${dest}.sums"
   local expected actual
   mkdir -p "$(dirname "$dest")"
   suffix="$(arch_suffix)" || { rm -f "$tmp" "$sums"; die "Architecture CPU non supportée : $(uname -m)"; }
@@ -438,14 +439,16 @@ select_engines() {
 
 # ── Déploiement d'un binaire moteur autonome ──────────────
 install_engine_binary() {
-  local eng="$1" dest="/usr/local/bin/labosurf-${eng}"
+  local eng="$1"
+  local dest="/usr/local/bin/labosurf-${eng}"
   download_asset "labosurf-${eng}" "$dest"
   ok "Binaire ${eng} installé"
 }
 
 # ── Service systemd par moteur (supervision du vrai binaire tierce) ──
 install_engine_service() {
-  local eng="$1" eng_service="/etc/systemd/system/labosurf-${eng}.service"
+  local eng="$1"
+  local eng_service="/etc/systemd/system/labosurf-${eng}.service"
   local engconf="/etc/labosurf/engines/${eng}.conf"
   cat > "$eng_service" <<UNIT
 [Unit]
@@ -471,7 +474,8 @@ UNIT
 
 # Fichier de configuration d'environnement d'un moteur (source du binaire tierce).
 gen_engine_conf() {
-  local eng="$1" conf="/etc/labosurf/engines/${eng}.conf"
+  local eng="$1"
+  local conf="/etc/labosurf/engines/${eng}.conf"
   if [[ ! -f "$conf" ]]; then
     cat > "$conf" <<CONF
 # Configuration du moteur ${eng} — préfixe d'environnement LABOSURF_${eng^^}
