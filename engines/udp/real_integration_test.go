@@ -57,7 +57,7 @@ func TestRealEndToEnd(t *testing.T) {
 	config.TUN.Name = "labsrv0"
 	config.TUN.Enabled = true
 
-	srv, err := NewServer(config)
+	srv, err := NewServer(config, nil)
 	if err != nil {
 		t.Fatalf("NewServer : %v", err)
 	}
@@ -261,7 +261,7 @@ func TestRealKeepalive(t *testing.T) {
 	config.TUN.Address = "10.98.0.1/24"
 	config.TUN.Enabled = false // pas besoin de TUN pour le keepalive
 
-	srv, err := NewServer(config)
+	srv, err := NewServer(config, nil)
 	if err != nil {
 		t.Fatalf("NewServer : %v", err)
 	}

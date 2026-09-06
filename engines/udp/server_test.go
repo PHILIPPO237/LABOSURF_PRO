@@ -54,7 +54,7 @@ func newTestServer(t *testing.T, users map[string]UserConfig) (*Server, *net.UDP
 	config.Auth.Mode = "passwords"
 	config.Auth.Users = users
 
-	srv, err := NewServer(config)
+	srv, err := NewServer(config, nil)
 	if err != nil {
 		t.Fatalf("NewServer : %v", err)
 	}

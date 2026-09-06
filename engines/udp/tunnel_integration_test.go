@@ -88,7 +88,7 @@ func TestTunnelHandshakeAndIPPacket(t *testing.T) {
 	config.Auth.Users = users
 	config.TUN.Address = "10.77.0.1/24"
 
-	srv, err := NewServer(config)
+	srv, err := NewServer(config, nil)
 	if err != nil {
 		t.Fatalf("NewServer : %v", err)
 	}
@@ -257,7 +257,7 @@ func TestTunnelAntiSpoofing(t *testing.T) {
 	config.Auth.Users = users
 	config.TUN.Address = "10.77.0.1/24"
 
-	srv, err := NewServer(config)
+	srv, err := NewServer(config, nil)
 	if err != nil {
 		t.Fatalf("NewServer : %v", err)
 	}
@@ -324,7 +324,7 @@ func TestTunnelKeepalive(t *testing.T) {
 	config.Auth.Users = users
 	config.TUN.Address = "10.77.0.1/24"
 
-	srv, err := NewServer(config)
+	srv, err := NewServer(config, nil)
 	if err != nil {
 		t.Fatalf("NewServer : %v", err)
 	}
@@ -382,7 +382,7 @@ func TestTunnelMultipleClients(t *testing.T) {
 	config.Auth.Users = users
 	config.TUN.Address = "10.77.0.1/24"
 
-	srv, err := NewServer(config)
+	srv, err := NewServer(config, nil)
 	if err != nil {
 		t.Fatalf("NewServer : %v", err)
 	}
