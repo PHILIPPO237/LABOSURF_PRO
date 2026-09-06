@@ -377,6 +377,7 @@ JSON
 
 activate_license() {
   local token
+  [[ "${LABOSURF_DEV:-0}" == "1" ]] && { info "Mode DÉVELOPPEMENT (LABOSURF_DEV=1) : licence non requise."; return 0; }
   echo
   printf '  %bLicence LABOSURF PRO%b\n' "$BOLD$CYAN" "$RESET"
   echo
@@ -548,17 +549,17 @@ main() {
   step_begin 4 'Préparation des répertoires'
   run_step "Création de l'environnement LABOSURF PRO..." prepare_dirs
 
-  # ── [5/9] Licence ──────────────────────────────────────
-  step_begin 5 'Sécurisation de la licence'
+  # ── [5/9] Binaire gestionnaire ─────────────────────────
+  step_begin 5 'Déploiement du binaire gestionnaire'
+  run_step "Téléchargement du gestionnaire..." download_asset "labosurf" "$BIN_PATH"
+  step_ok "Gestionnaire installé pour $(uname -m)"
+
+  # ── [6/9] Licence ──────────────────────────────────────
+  step_begin 6 'Sécurisation de la licence'
   run_step 'Installation de la clé publique...' fetch_public_key
   step_ok 'Clé publique installée'
   activate_license
   step_ok 'Licence activée'
-
-  # ── [6/9] Binaire gestionnaire ─────────────────────────
-  step_begin 6 'Déploiement du binaire gestionnaire'
-  run_step "Téléchargement du gestionnaire..." download_asset "labosurf" "$BIN_PATH"
-  step_ok "Gestionnaire installé pour $(uname -m)"
 
   # ── [7/9] Moteurs ──────────────────────────────────────
   step_begin 7 'Installation des moteurs'
