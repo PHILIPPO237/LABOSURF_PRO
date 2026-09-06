@@ -26,6 +26,25 @@ Les hybrides sont validés à la création : **un seul VPN + un seul transport**
 
 ## Déploiement
 
+### Systèmes d'exploitation supportés
+
+| Distribution | Statut | Gestionnaire de paquets | Notes |
+|--------------|--------|------------------------|-------|
+| **Ubuntu** 20.04, 22.04, 24.04+ | ✅ Officiel | apt | Testé en CI (24.04) |
+| **Debian** 11 (Bullseye), 12 (Bookworm) | ✅ Officiel | apt | |
+| **Linux Mint** 20, 21+ | ✅ Officiel | apt | Basé sur Ubuntu LTS |
+| **Raspberry Pi OS** (Raspbian) | ✅ Officiel | apt | ARM64/ARMHF |
+| **Debian-based dérivées** (Pop!_OS, Elementary, etc.) | ✅ Compatible | apt | Hérite de Debian/Ubuntu |
+
+| Distribution | Statut | Note |
+|--------------|--------|------|
+| CentOS / RHEL / Rocky / AlmaLinux | ⚠️ Expérimental | Utilise `dnf`/`yum` — non testé, installation `apt` échouera |
+| Fedora | ⚠️ Expérimental | Utilise `dnf` — non testé |
+| Alpine Linux | ❌ Non supporté | Utilise `apk` + `musl libc` |
+| Arch Linux / Manjaro | ❌ Non supporté | Utilise `pacman` |
+
+> **Note** : Le script d'installation détecte la distribution via `/etc/os-release`. Pour les distributions non-Debian, l'installation **échouera** (le script utilise `apt` et `systemd`).
+
 ### Installation VPS (Linux)
 
 ```bash
