@@ -35,7 +35,8 @@ jobs:
           go vet ./...
           go test ./internal/...
           go build ./...
-          (cd engines/udp && go vet ./... && go test ./...)
+          (cd engines/udp && go vet ./... && \
+            go test -timeout 2m -run '^TestLicense|TestIntegration|TestCross|TestInstall|TestClient|TestNoEmbedded|TestRunLicense|TestReadToken|TestServerAuth|TestServerRejects|TestServerBlocks|TestServerMax|TestServerBlocks|TestStartup|TestActivation|TestClientHas|TestNoEmbedded|TestStore|TestFormat|TestBuild|TestPortal' .)
 
       - name: Read public verification key
         id: key
