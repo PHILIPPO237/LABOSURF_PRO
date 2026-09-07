@@ -118,12 +118,13 @@ func grantString(acc store.Account, engineName, key string) string {
 	return ""
 }
 
-// vlessLink compose une URI VLESS (Xray).
+// vlessLink compose une URI VLESS (Xray) avec support REALITY.
 func vlessLink(uuid, host string, port int) string {
 	if uuid == "" {
 		uuid = "UUID-MANQUANT"
 	}
-	return fmt.Sprintf("vless://%s@%s:%d?encryption=none&type=tcp#LABOSURF", uuid, host, port)
+	// VLESS URI avec REALITY (xtls-rprx-vision flow)
+	return fmt.Sprintf("vless://%s@%s:%d?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.microsoft.com&fp=chrome&pbk=PUBLIC_KEY_PLACEHOLDER&sid=&type=tcp&headerType=none#LABOSURF", uuid, host, port)
 }
 
 func firstDomain(prof srvcfg.Profile) string {
@@ -148,9 +149,17 @@ func udpServerConfig(acc store.Account, port int) []byte {
 	return marshal(s)
 }
 
-// xrayServerConfig produit la config serveur Xray (profil minimal).
+// xrayServerConfig produit la config serveur Xray-core (format JSON officiel).
 func xrayServerConfig(acc store.Account, uuid string) []byte {
+	flow := "xtls-rprx-vision"
+	if f := grantString(acc, store.EngineXray, "flow"); f != "" {
+		flow = f
+	}
+
 	s := map[string]any{
+		"log": map[string]any{
+			"loglevel": "warning",
+		},
 		"inbounds": []any{
 			map[string]any{
 				"port":     443,
@@ -158,16 +167,54 @@ func xrayServerConfig(acc store.Account, uuid string) []byte {
 				"settings": map[string]any{
 					"clients": []any{
 						map[string]any{
-							"id":      uuid,
-							"email":   acc.ID + "@labosurf",
-							"flow":    "xtls-rprx-vision",
-							"enabled": acc.Enabled,
+							"id":       uuid,
+							"email":    acc.ID + "@labosurf",
+							"flow":     flow,
+							"enabled":  acc.Enabled,
 						},
 					},
+					"decryption": "none",
+					"fallbacks":  []any{},
+				},
+				"streamSettings": map[string]any{
+					"network": "tcp",
+					"security": "reality",
+					"realitySettings": map[string]any{
+						"show":    false,
+						"dest":    "www.microsoft.com:443",
+						"xver":    0,
+						"serverNames": []string{"www.microsoft.com"},
+						"privateKey":  "", // Will be generated at install time
+						"shortIds":    []string{""},
+					},
+				},
+				"sniffing": map[string]any{
+					"enabled":      true,
+					"destOverride": []string{"http", "tls", "quic"},
 				},
 			},
 		},
-		"outbounds": []any{map[string]any{"protocol": "freedom"}},
+		"outbounds": []any{
+			map[string]any{"protocol": "freedom", "tag": "direct"},
+			map[string]any{"protocol": "blackhole", "tag": "block"},
+		},
+		"routing": map[string]any{
+			"domainStrategy": "AsIs",
+			"rules": []any{
+				map[string]any{
+					"type": "field",
+					"outboundTag": "block",
+					"protocol": []string{"bittorrent"},
+				},
+			},
+		},
+		"dns": map[string]any{
+			"servers": []any{
+				"https+local://8.8.8.8/dns-query",
+				"https+local://1.1.1.1/dns-query",
+				"localhost",
+			},
+		},
 	}
 	return marshal(s)
 }
@@ -317,22 +364,70 @@ func buildGroupedConfig(engineName string, accounts []store.Account, prof srvcfg
 			if uuid == "" {
 				uuid = "uuid-" + a.ID
 			}
+			flow := grantString(a, engineName, "flow")
+			if flow == "" {
+				flow = "xtls-rprx-vision"
+			}
 			clients = append(clients, map[string]any{
-				"id":      uuid,
-				"email":   a.ID + "@labosurf",
-				"flow":    "xtls-rprx-vision",
-				"enabled": a.Enabled,
+				"id":       uuid,
+				"email":    a.ID + "@labosurf",
+				"flow":     flow,
+				"enabled":  a.Enabled,
 			})
 		}
+
 		return marshal(map[string]any{
+			"log": map[string]any{
+				"loglevel": "warning",
+			},
 			"inbounds": []any{
 				map[string]any{
 					"port":     443,
 					"protocol": "vless",
-					"settings": map[string]any{"clients": clients},
+					"settings": map[string]any{
+						"clients":      clients,
+						"decryption":   "none",
+						"fallbacks":    []any{},
+					},
+					"streamSettings": map[string]any{
+						"network": "tcp",
+						"security": "reality",
+						"realitySettings": map[string]any{
+							"show":       false,
+							"dest":       "www.microsoft.com:443",
+							"xver":       0,
+							"serverNames": []string{"www.microsoft.com"},
+							"privateKey": "", // Will be generated at install time
+							"shortIds":    []string{""},
+						},
+					},
+					"sniffing": map[string]any{
+						"enabled":       true,
+						"destOverride":  []string{"http", "tls", "quic"},
+					},
 				},
 			},
-			"outbounds": []any{map[string]any{"protocol": "freedom"}},
+			"outbounds": []any{
+				map[string]any{"protocol": "freedom", "tag": "direct"},
+				map[string]any{"protocol": "blackhole", "tag": "block"},
+			},
+			"routing": map[string]any{
+				"domainStrategy": "AsIs",
+				"rules": []any{
+					map[string]any{
+						"type":        "field",
+						"outboundTag": "block",
+						"protocol":    []string{"bittorrent"},
+					},
+				},
+			},
+			"dns": map[string]any{
+				"servers": []any{
+					"https+local://8.8.8.8/dns-query",
+					"https+local://1.1.1.1/dns-query",
+					"localhost",
+				},
+			},
 		})
 
 	case store.EngineHysteria:

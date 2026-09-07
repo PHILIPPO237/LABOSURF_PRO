@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -33,6 +34,9 @@ type Server struct {
 
 	closeOnce sync.Once
 	store     *store.Store // pour persistance quota
+
+	// tunMu protège l'accès à s.tun pour éviter les data races
+	tunMu sync.RWMutex
 }
 
 func NewServer(config Config, st *store.Store) (*Server, error) {
@@ -54,7 +58,9 @@ func NewServer(config Config, st *store.Store) (*Server, error) {
 	if config.TUN.Address != "" {
 		tunnelPool, err = NewTunnelIPPool(config.TUN.Address)
 		if err != nil {
-			_ = conn.Close()
+			if cerr := conn.Close(); cerr != nil {
+				log.Printf("fermeture connexion UDP après erreur: %v", cerr)
+			}
 			return nil, fmt.Errorf(
 				"initialisation du pool IP tunnel : %w",
 				err,
@@ -92,18 +98,23 @@ func (s *Server) Close() error {
 		s.mu.Lock()
 
 		for clientID, conn := range s.streams {
-			_ = conn.Close()
+			if err := conn.Close(); err != nil {
+				log.Printf("fermeture connexion stream %s: %v", clientID, err)
+			}
 			delete(s.streams, clientID)
 		}
 
 		s.mu.Unlock()
 
+		// Fermer le TUN avec le mutex dédié pour éviter les data races
+		s.tunMu.Lock()
 		if s.tun != nil {
 			if err := s.tun.Close(); err != nil {
 				log.Printf("fermeture TUN : %v", err)
 			}
 			s.tun = nil
 		}
+		s.tunMu.Unlock()
 
 		if s.conn != nil {
 			// On ferme la socket mais on ne remet PAS s.conn à nil :
@@ -150,7 +161,8 @@ func (s *Server) Run(ctx context.Context) error {
 		go s.tunLoop(ctx)
 	}
 
-	buffer := make([]byte, maxUDPPacketSize)
+	buffer := AcquireTunnelBuffer()
+	defer ReleaseTunnelBuffer(buffer)
 
 	for {
 		select {
@@ -211,8 +223,16 @@ func (s *Server) tunLoop(ctx context.Context) {
 		default:
 		}
 
-		// Lire un paquet IP depuis le TUN
-		n, err := s.tun.Read(buffer)
+		// Lire un paquet IP depuis le TUN avec protection mutex
+		s.tunMu.RLock()
+		tun := s.tun
+		if tun == nil {
+			s.tunMu.RUnlock()
+			return
+		}
+		s.tunMu.RUnlock()
+
+		n, err := tun.Read(buffer)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -668,6 +688,15 @@ func (s *Server) getStream(
 		)
 	}
 
+	// Appliquer un deadline sur la connexion backend pour éviter les blocages indéfinis
+	if err := conn.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		if cerr := conn.Close(); cerr != nil {
+			log.Printf("fermeture connexion backend après erreur deadline: %v", cerr)
+		}
+		return nil, fmt.Errorf("deadline backend : %w", err)
+	}
+
+	// Ajouter à la map APRÈS la connexion réussie pour éviter les fuites
 	s.streams[clientID] = conn
 
 	log.Printf(
@@ -710,6 +739,13 @@ func (s *Server) forwardToTCP(
 		return
 	}
 
+	// Valider l'adresse backend pour prévenir les SSRF
+	if err := validateBackendAddress(s.backendAddress()); err != nil {
+		log.Printf("Adresse backend invalide pour %s : %v", clientID, err)
+		s.removeStream(clientID, nil)
+		return
+	}
+
 	if _, err := conn.Write(payload); err != nil {
 		log.Printf(
 			"écriture TCP pour %s : %v",
@@ -724,12 +760,41 @@ func (s *Server) forwardToTCP(
 	s.sessions.Touch(clientID)
 }
 
+// validateBackendAddress vérifie que l'adresse backend est sûre (pas de SSRF)
+func validateBackendAddress(addr string) error {
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("adresse invalide: %w", err)
+	}
+
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port <= 0 || port > 65535 {
+		return fmt.Errorf("port invalide: %s", portStr)
+	}
+
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return fmt.Errorf("résolution DNS échouée: %w", err)
+	}
+
+	for _, ip := range ips {
+		if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
+			return fmt.Errorf("adresse IP interdite (loopback/link-local/multicast/unspecified): %s", ip)
+		}
+		// Optionnel: bloquer les réseaux privés RFC1918 si backend externe requis
+		// if isPrivateIP(ip) { return fmt.Errorf("adresse privée interdite: %s", ip) }
+	}
+
+	return nil
+}
+
 func (s *Server) readTCPStream(
 	clientID string,
 	client *net.UDPAddr,
 	conn net.Conn,
 ) {
-	buffer := make([]byte, maxUDPPacketSize)
+	buffer := AcquireTunnelBuffer()
+	defer ReleaseTunnelBuffer(buffer)
 
 	for {
 		n, err := conn.Read(buffer)
@@ -804,8 +869,10 @@ func (s *Server) removeStream(
 		return
 	}
 
-	_ = conn.Close()
-	delete(s.streams, clientID)
+if err := conn.Close(); err != nil {
+			log.Printf("fermeture connexion stream %s: %v", clientID, err)
+		}
+		delete(s.streams, clientID)
 
 	s.removeSession(clientID)
 
@@ -821,7 +888,9 @@ func (s *Server) cleanupExpiredStreams() {
 
 	for clientID, conn := range s.streams {
 		if _, ok := s.sessions.Get(clientID); !ok {
-			_ = conn.Close()
+			if err := conn.Close(); err != nil {
+				log.Printf("fermeture connexion expirée %s: %v", clientID, err)
+			}
 			delete(s.streams, clientID)
 
 			log.Printf(

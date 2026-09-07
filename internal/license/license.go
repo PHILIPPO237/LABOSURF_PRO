@@ -1,7 +1,10 @@
 package license
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -21,6 +24,92 @@ const (
 	machineIDFileName  = "machine.id"
 	activationFileName = "activation.json"
 )
+
+// embeddedVerifyKeyHex is the production public key.
+// It can be overridden by LABOSURF_LICENSE_PUBKEY env var or labosurf_pub.key file.
+var EmbeddedVerifyKeyHex = "7b27e59816d60f38a7299e226c714a3cb31a011f91f424099368506ded209595"
+
+// Test keys - only used in tests
+var (
+	testSignKey   ed25519.PrivateKey
+	testVerifyKey ed25519.PublicKey
+)
+
+// resolveVerifyKey returns the Ed25519 public key for signature verification.
+// Priority: test key > env var LABOSURF_LICENSE_PUBKEY > labosurf_pub.key file > embedded key.
+func resolveVerifyKey() (ed25519.PublicKey, error) {
+	if testVerifyKey != nil {
+		return testVerifyKey, nil
+	}
+
+	if v := strings.TrimSpace(os.Getenv("LABOSURF_LICENSE_PUBKEY")); v != "" {
+		return decodePublicKey(v)
+	}
+
+	for _, path := range []string{"labosurf_pub.key", "/etc/labosurf/labosurf_pub.key"} {
+		if raw, err := os.ReadFile(path); err == nil && len(raw) > 0 {
+			return decodePublicKey(strings.TrimSpace(string(raw)))
+		}
+	}
+
+	if EmbeddedVerifyKeyHex != "" {
+		return decodePublicKey(EmbeddedVerifyKeyHex)
+	}
+
+	return nil, fmt.Errorf("clé publique de vérification introuvable")
+}
+
+func decodePublicKey(s string) (ed25519.PublicKey, error) {
+	b, err := hex.DecodeString(strings.TrimSpace(s))
+	if err != nil {
+		return nil, fmt.Errorf("clé publique invalide : %w", err)
+	}
+
+	if len(b) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf(
+			"clé publique : taille %d attendue %d",
+			len(b),
+			ed25519.PublicKeySize,
+		)
+	}
+
+	return ed25519.PublicKey(b), nil
+}
+
+// canonicalPayload returns the JSON payload that was signed.
+func canonicalPayload(data LicenseData) ([]byte, error) {
+	return json.Marshal(data)
+}
+
+// verifySignature verifies the Ed25519 signature of a license.
+func verifySignature(payload []byte, signature []byte, pub ed25519.PublicKey) bool {
+	return ed25519.Verify(pub, payload, signature)
+}
+
+// ParseLicenseToken decodes a license token without verifying its signature.
+func ParseLicenseToken(token string) (LicenseData, []byte, error) {
+	parts := strings.Split(strings.TrimSpace(token), ".")
+	if len(parts) != 2 {
+		return LicenseData{}, nil, fmt.Errorf("format de jeton invalide (attendu: payload.signature)")
+	}
+
+	payload, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return LicenseData{}, nil, fmt.Errorf("décodage payload : %w", err)
+	}
+
+	signature, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return LicenseData{}, nil, fmt.Errorf("décodage signature : %w", err)
+	}
+
+	var data LicenseData
+	if err := json.Unmarshal(payload, &data); err != nil {
+		return LicenseData{}, nil, fmt.Errorf("payload JSON invalide : %w", err)
+	}
+
+	return data, signature, nil
+}
 
 type LicenseData struct {
 	ID              string `json:"id"`
@@ -80,29 +169,23 @@ func VerifyPlatformLicense() error {
 		return fmt.Errorf("licence vide")
 	}
 
-	// Basic format validation
-	parts := strings.Split(tokenStr, ".")
-	if len(parts) != 2 {
-		return fmt.Errorf("format de jeton invalide (attendu: payload.signature)")
-	}
-
-	// TODO: Full signature verification with public key
-	// For now, just check format and expiration
-	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+	// Parse and verify the license token (format + signature + expiration + product)
+	data, signature, err := ParseLicenseToken(tokenStr)
 	if err != nil {
-		return fmt.Errorf("décodage payload : %w", err)
+		return err
 	}
 
-	var data struct {
-		ID              string `json:"id"`
-		Key             string `json:"key"`
-		IssuedAt        string `json:"issued_at"`
-		ActivationUntil string `json:"activation_until"`
-		Product         string `json:"product"`
-		Comment         string `json:"comment,omitempty"`
+	// Verify Ed25519 signature
+	pub, err := resolveVerifyKey()
+	if err != nil {
+		return fmt.Errorf("clé publique de vérification : %w", err)
 	}
-	if err := json.Unmarshal(payloadBytes, &data); err != nil {
-		return fmt.Errorf("payload JSON invalide : %w", err)
+	payloadBytes, err := canonicalPayload(data)
+	if err != nil {
+		return fmt.Errorf("sérialisation payload : %w", err)
+	}
+	if !verifySignature(payloadBytes, signature, pub) {
+		return fmt.Errorf("signature Ed25519 invalide : licence altérée")
 	}
 
 	if data.Product != "LABOSURF PRO" {
@@ -140,10 +223,35 @@ func VerifyPlatformLicense() error {
 
 // Activate activates a license token
 func Activate(token string) error {
-	// Verify token format
-	parts := strings.Split(token, ".")
-	if len(parts) != 2 {
-		return fmt.Errorf("format de jeton invalide")
+	// Parse and verify the token first
+	data, signature, err := ParseLicenseToken(token)
+	if err != nil {
+		return err
+	}
+
+	// Verify Ed25519 signature
+	pub, err := resolveVerifyKey()
+	if err != nil {
+		return fmt.Errorf("clé publique de vérification : %w", err)
+	}
+	payloadBytes, err := canonicalPayload(data)
+	if err != nil {
+		return fmt.Errorf("sérialisation payload : %w", err)
+	}
+	if !verifySignature(payloadBytes, signature, pub) {
+		return fmt.Errorf("signature Ed25519 invalide : licence altérée")
+	}
+
+	if data.Product != "LABOSURF PRO" {
+		return fmt.Errorf("produit incompatible : %s", data.Product)
+	}
+
+	activationUntil, err := time.Parse(time.RFC3339, data.ActivationUntil)
+	if err != nil {
+		return fmt.Errorf("date d'activation invalide : %w", err)
+	}
+	if time.Now().After(activationUntil) {
+		return fmt.Errorf("fenêtre d'activation expirée (%s)", activationUntil.Format(time.RFC3339))
 	}
 
 	// Generate or load machine ID
@@ -163,7 +271,7 @@ func Activate(token string) error {
 
 	// Record activation
 	activation := ActivationRecord{
-		LicenseID:     "extracted-from-token", // TODO: parse from payload
+		LicenseID:     data.ID,
 		MachineID:     machineID,
 		ActivatedAt:   time.Now().UTC().Format(time.RFC3339),
 		Token:         token,
@@ -230,20 +338,15 @@ func getOrCreateMachineID() (string, error) {
 		return strings.TrimSpace(string(data)), nil
 	}
 	b := make([]byte, 32)
-	_, _ = os.ReadFile("/dev/urandom") // just to stir
-	if _, err := os.ReadFile("/dev/urandom"); err != nil {
-		// fallback
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("génération machine ID : %w", err)
 	}
-	if _, err := os.ReadFile("/dev/urandom"); err != nil {
-	}
-	// Use crypto/rand
-	// Simplified for now
-	b = []byte(fmt.Sprintf("machine-%d", time.Now().UnixNano()))
+	hexID := hex.EncodeToString(b)
 	if err := os.MkdirAll(getDataDir(), 0o755); err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(path, b, 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(hexID), 0o600); err != nil {
 		return "", err
 	}
-	return string(b), nil
+	return hexID, nil
 }

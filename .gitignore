@@ -50,3 +50,6 @@ engines/udp/runtime/
 
 # Base de licences locale / tokens
 engines/udp/licenses.json
+
+# Binaire racine local (ne jamais committer)
+/labosurf
