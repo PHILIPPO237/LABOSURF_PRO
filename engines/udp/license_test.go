@@ -100,17 +100,10 @@ func TestLicenseActivationWindow(t *testing.T) {
 		base64.RawURLEncoding.EncodeToString(sig)
 
 	tmpDir := t.TempDir()
-	machinePath := filepath.Join(tmpDir, "machine.id")
-	actPath := filepath.Join(tmpDir, "activation.json")
 
-	as, err := LoadActivationStore(actPath, machinePath)
-	if err != nil {
-		t.Fatalf("LoadActivationStore : %v", err)
-	}
-
-	_, err = as.Activate(token, nil)
+	_, err = UseLicense(token, tmpDir, nil)
 	if err != ErrLicenseExpired {
-		t.Fatalf("une licence dont la fenêtre d'activation est dépassée doit être refusée, obtenu %v", err)
+		t.Fatalf("une licence dont la fenêtre d'installation est dépassée doit être refusée, obtenu %v", err)
 	}
 }
 
@@ -194,148 +187,107 @@ func TestLicenseBadFormat(t *testing.T) {
 
 func TestLicenseActivation(t *testing.T) {
 	tmpDir := t.TempDir()
-	machinePath := filepath.Join(tmpDir, "machine.id")
-	actPath := filepath.Join(tmpDir, "activation.json")
 
 	token, lic, err := CreateLicense("ACTIV", "")
 	if err != nil {
 		t.Fatalf("CreateLicense : %v", err)
 	}
 
-	as, err := LoadActivationStore(actPath, machinePath)
+	data, err := UseLicense(token, tmpDir, nil)
 	if err != nil {
-		t.Fatalf("LoadActivationStore : %v", err)
+		t.Fatalf("UseLicense : %v", err)
 	}
 
-	res, err := as.Activate(token, nil)
+	if data.ID != lic.Data.ID {
+		t.Fatalf("ID attendu %q, obtenu %q", lic.Data.ID, data.ID)
+	}
+
+	if data.Key != lic.Data.Key {
+		t.Fatalf("clé différente")
+	}
+
+	recs, err := ListReceipts(tmpDir)
 	if err != nil {
-		t.Fatalf("Activate : %v", err)
+		t.Fatalf("ListReceipts : %v", err)
 	}
-
-	if !res.Activated {
-		t.Fatal("l'activation doit réussir")
-	}
-
-	if res.Data.ID != lic.Data.ID {
-		t.Fatalf("ID activation attendu %q, obtenu %q", lic.Data.ID, res.Data.ID)
-	}
-
-	if res.Data.Key != lic.Data.Key {
-		t.Fatalf("clé activation différente")
-	}
-
-	checkAs, err := LoadActivationStore(actPath, machinePath)
-	if err != nil {
-		t.Fatalf("rechargement : %v", err)
-	}
-
-	checkRes, err := checkAs.Check(nil)
-	if err != nil {
-		t.Fatalf("Check après activation : %v", err)
-	}
-
-	if !checkRes.Activated {
-		t.Fatal("Check doit confirmer l'activation")
+	if len(recs) != 1 || recs[0].LicenseID != "ACTIV" {
+		t.Fatalf("reçu attendu pour ACTIV, obtenu %+v", recs)
 	}
 }
 
 func TestLicenseAlreadyActivated(t *testing.T) {
 	tmpDir := t.TempDir()
-	machinePath := filepath.Join(tmpDir, "machine.id")
-	actPath := filepath.Join(tmpDir, "activation.json")
 
 	token, _, err := CreateLicense("DOUBLE", "")
 	if err != nil {
 		t.Fatalf("CreateLicense : %v", err)
 	}
 
-	as, err := LoadActivationStore(actPath, machinePath)
-	if err != nil {
-		t.Fatalf("LoadActivationStore : %v", err)
+	if _, err := UseLicense(token, tmpDir, nil); err != nil {
+		t.Fatalf("1ère utilisation : %v", err)
 	}
 
-	if _, err := as.Activate(token, nil); err != nil {
-		t.Fatalf("1ère activation : %v", err)
-	}
-
-	_, err = as.Activate(token, nil)
-	if err != ErrAlreadyActivated {
-		t.Fatalf("2ème activation doit retourner ErrAlreadyActivated, obtenu %v", err)
+	_, err = UseLicense(token, tmpDir, nil)
+	if err != ErrAlreadyUsed {
+		t.Fatalf("2ème utilisation doit retourner ErrAlreadyUsed, obtenu %v", err)
 	}
 }
 
 func TestLicenseActivationPersistence(t *testing.T) {
 	tmpDir := t.TempDir()
-	machinePath := filepath.Join(tmpDir, "machine.id")
-	actPath := filepath.Join(tmpDir, "activation.json")
 
 	token, _, err := CreateLicense("PERSIST-ACT", "")
 	if err != nil {
 		t.Fatalf("CreateLicense : %v", err)
 	}
 
-	as1, err := LoadActivationStore(actPath, machinePath)
+	if _, err := UseLicense(token, tmpDir, nil); err != nil {
+		t.Fatalf("UseLicense : %v", err)
+	}
+
+	// Le reçu survit : une simple relecture du dossier le retrouve.
+	recs, err := ListReceipts(tmpDir)
 	if err != nil {
-		t.Fatalf("LoadActivationStore : %v", err)
+		t.Fatalf("ListReceipts : %v", err)
 	}
 
-	if _, err := as1.Activate(token, nil); err != nil {
-		t.Fatalf("Activate : %v", err)
+	if len(recs) != 1 {
+		t.Fatalf("1 reçu attendu, obtenu %d", len(recs))
 	}
 
-	as2, err := LoadActivationStore(actPath, machinePath)
-	if err != nil {
-		t.Fatalf("rechargement : %v", err)
-	}
-
-	res, err := as2.Check(nil)
-	if err != nil {
-		t.Fatalf("Check après rechargement : %v", err)
-	}
-
-	if !res.Activated {
-		t.Fatal("l'activation doit survivre au rechargement")
-	}
-
-	if res.Data.ID != "PERSIST-ACT" {
-		t.Fatalf("ID attendu PERSIST-ACT, obtenu %q", res.Data.ID)
+	if recs[0].LicenseID != "PERSIST-ACT" {
+		t.Fatalf("ID attendu PERSIST-ACT, obtenu %q", recs[0].LicenseID)
 	}
 }
 
 func TestLicenseDeactivate(t *testing.T) {
 	tmpDir := t.TempDir()
-	machinePath := filepath.Join(tmpDir, "machine.id")
-	actPath := filepath.Join(tmpDir, "activation.json")
 
 	token, _, err := CreateLicense("DEACT", "")
 	if err != nil {
 		t.Fatalf("CreateLicense : %v", err)
 	}
 
-	as, err := LoadActivationStore(actPath, machinePath)
+	if _, err := UseLicense(token, tmpDir, nil); err != nil {
+		t.Fatalf("UseLicense : %v", err)
+	}
+
+	if err := ClearReceipts(tmpDir); err != nil {
+		t.Fatalf("ClearReceipts : %v", err)
+	}
+
+	recs, err := ListReceipts(tmpDir)
 	if err != nil {
-		t.Fatalf("LoadActivationStore : %v", err)
+		t.Fatalf("ListReceipts : %v", err)
 	}
-
-	if _, err := as.Activate(token, nil); err != nil {
-		t.Fatalf("Activate : %v", err)
-	}
-
-	if err := as.Deactivate(); err != nil {
-		t.Fatalf("Deactivate : %v", err)
-	}
-
-	_, err = as.Check(nil)
-	if err != ErrActivationMissing {
-		t.Fatalf("Check après désactivation doit retourner ErrActivationMissing, obtenu %v", err)
+	if len(recs) != 0 {
+		t.Fatalf("aucun reçu attendu après suppression, obtenu %d", len(recs))
 	}
 }
 
 func TestLicenseRegistryRevoke(t *testing.T) {
 	tmpDir := t.TempDir()
 	regPath := filepath.Join(tmpDir, "licenses.json")
-	machinePath := filepath.Join(tmpDir, "machine.id")
-	actPath := filepath.Join(tmpDir, "activation.json")
 
 	token, lic, err := CreateLicense("REG-REVOKE", "")
 	if err != nil {
@@ -359,14 +311,9 @@ func TestLicenseRegistryRevoke(t *testing.T) {
 		t.Fatal("la licence doit être marquée révoquée")
 	}
 
-	as, err := LoadActivationStore(actPath, machinePath)
-	if err != nil {
-		t.Fatalf("LoadActivationStore : %v", err)
-	}
-
-	_, err = as.Activate(token, reg)
+	_, err = UseLicense(token, tmpDir, reg)
 	if err != ErrLicenseRevoked {
-		t.Fatalf("activation de licence révoquée doit échouer : %v", err)
+		t.Fatalf("utilisation de licence révoquée doit échouer : %v", err)
 	}
 }
 

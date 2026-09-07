@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -24,9 +25,11 @@ import (
 //   base64url(payload JSON).base64url(signature Ed25519)
 //
 // Le payload signé contient une clé LABOSURF de exactement 40 caractères.
-// La fenêtre de 3 heures concerne uniquement la PREMIÈRE activation.
-// Après activation réussie, l'activation reste valide sur le VPS lié.
+// La licence ouvre l'ACCÈS AU SCRIPT D'INSTALLATION, pas au serveur :
+// 1 clé = 1 installation, dans les 3 heures suivant l'émission.
+// Une fois installé, le serveur tourne librement, sans contrôle.
 //
+
 
 const (
 	productName      = "LABOSURF PRO"
@@ -38,16 +41,13 @@ const (
 )
 
 var (
-	ErrLicenseInvalid    = errors.New("licence invalide")
-	ErrLicenseExpired    = errors.New("licence expirée")
-	ErrLicenseRevoked    = errors.New("licence révoquée")
-	ErrLicenseTampered   = errors.New("licence altérée (signature invalide)")
-	ErrNoSigningKey      = errors.New("clé privée de signature absente (réservé à l'administrateur)")
-	ErrNoVerifyKey       = errors.New("clé publique de vérification absente")
-	ErrLicenseFormat     = errors.New("format de licence invalide")
-	ErrAlreadyActivated  = errors.New("licence déjà activée")
-	ErrWrongDevice       = errors.New("licence activée sur un autre appareil")
-	ErrActivationMissing = errors.New("aucune activation enregistrée")
+	ErrLicenseInvalid   = errors.New("licence invalide")
+	ErrLicenseExpired   = errors.New("fenêtre d'installation dépassée")
+	ErrLicenseRevoked   = errors.New("licence révoquée")
+	ErrLicenseTampered  = errors.New("licence altérée (signature invalide)")
+	ErrNoSigningKey     = errors.New("clé privée de signature absente (réservé à l'administrateur)")
+	ErrNoVerifyKey      = errors.New("clé publique de vérification absente")
+	ErrLicenseFormat    = errors.New("format de licence invalide")
 )
 
 // LicenseStatus décrit l'état d'une licence.
@@ -300,9 +300,9 @@ func verifySignature(lic License, pub ed25519.PublicKey) bool {
 	return ed25519.Verify(pub, payload, lic.Signature)
 }
 
-// VerifyLicenseToken vérifie un jeton : format + signature.
-// La fenêtre ActivationUntil est volontairement vérifiée lors de
-// la première activation, pas ici.
+// VerifyLicenseToken vérifie un jeton : format + signature (+ produit).
+// La fenêtre ActivationUntil est volontairement vérifiée au moment
+// d'autoriser UNE installation (UseLicense, `license verify`), pas ici.
 func VerifyLicenseToken(token string) (LicenseData, LicenseStatus, error) {
 	lic, err := ParseLicenseToken(token)
 	if err != nil {
@@ -312,11 +312,36 @@ func VerifyLicenseToken(token string) (LicenseData, LicenseStatus, error) {
 	return VerifyLicense(lic)
 }
 
+// writeFileAtomic écrit un fichier de façon atomique (temp + rename) avec
+// les permissions demandées. Évite la corruption si le programme est
+// interrompu pendant l'écriture.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	if dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("création du dossier %s : %w", dir, err)
+		}
+	}
+
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, perm); err != nil {
+		return fmt.Errorf("écriture temporaire %s : %w", tmp, err)
+	}
+
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("remplacement atomique %s : %w", path, err)
+	}
+
+	return nil
+}
+
 // VerifyLicense vérifie une licence déjà décodée.
 //
 // Important : ActivationUntil n'est PAS une date d'expiration permanente.
-// Elle indique seulement jusqu'à quand la licence peut être activée pour
-// la première fois. Une licence déjà activée reste valide sur son VPS.
+// Elle indique seulement jusqu'à quand la licence peut ouvrir une
+// installation pour la première fois. Une fois installé, le serveur
+// tourne librement, sans contrôle de licence.
 func VerifyLicense(lic License) (LicenseData, LicenseStatus, error) {
 	pub, err := resolveVerifyKey()
 	if err != nil {

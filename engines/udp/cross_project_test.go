@@ -12,7 +12,6 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -84,10 +83,8 @@ func TestCrossMakerToPRO_RealKeys(t *testing.T) {
 
 	// 2. Créer une licence (comme le Maker le fait).
 	tmp := t.TempDir()
-	actPath := filepath.Join(tmp, "activation.json")
-	machPath := filepath.Join(tmp, "machine.id")
 
-	token, lic, err := CreateLicense("CLIENT-REEL-001", "client premium")
+	token, lic, err := CreateLicense("CLIENT-REEL-001", "serveur premium")
 	if err != nil {
 		t.Fatalf("CreateLicense : %v", err)
 	}
@@ -107,43 +104,39 @@ func TestCrossMakerToPRO_RealKeys(t *testing.T) {
 	}
 	t.Log("✓ PRO accepte la licence signée par le Maker")
 
-	// 4. Activation complète dans le délai de 3h (TEST 1 suite).
-	as, err := LoadActivationStore(actPath, machPath)
+	// 4. La clé ouvre UNE installation dans le délai de 3h.
+	used, err := UseLicense(token, tmp, nil)
 	if err != nil {
-		t.Fatalf("LoadActivationStore : %v", err)
+		t.Fatalf("installation refusée : %v", err)
 	}
-	res, err := as.Activate(token, nil)
-	if err != nil || !res.Activated {
-		t.Fatalf("activation refusée : %v", err)
+	if used.ID != "CLIENT-REEL-001" {
+		t.Fatalf("ID inattendu : %q", used.ID)
 	}
-	t.Log("✓ activation réussie dans la fenêtre de 3h")
+	t.Log("✓ installation autorisée dans la fenêtre de 3h")
 
-	// 5. Persistance après rechargement (TEST 5).
-	as2, _ := LoadActivationStore(actPath, machPath)
-	check, err := as2.Check(nil)
-	if err != nil || !check.Activated {
-		t.Fatalf("activation non persistante : %v", err)
+	// 5. Persistance du reçu après relecture du dossier.
+	recs, err := ListReceipts(tmp)
+	if err != nil || len(recs) != 1 || recs[0].LicenseID != "CLIENT-REEL-001" {
+		t.Fatalf("reçu non persistant : %+v, err=%v", recs, err)
 	}
-	t.Log("✓ activation persistante après rechargement")
+	t.Log("✓ reçu d'installation persistant")
 
-	// 6. Réutilisation de la même licence (TEST 6 : refusée).
-	if _, err := as2.Activate(token, nil); err != ErrAlreadyActivated {
-		t.Fatalf("seconde activation devrait être ErrAlreadyActivated, obtenu %v", err)
+	// 6. Réutilisation de la même clé (usage unique : refusée).
+	if _, err := UseLicense(token, tmp, nil); err != ErrAlreadyUsed {
+		t.Fatalf("seconde utilisation devrait être ErrAlreadyUsed, obtenu %v", err)
 	}
-	t.Log("✓ seconde activation refusée (usage unique local)")
+	t.Log("✓ seconde utilisation refusée (1 clé = 1 installation)")
 
-	// 7. Signature modifiée (TEST 2 : refusée).
+	// 7. Signature modifiée (refusée).
 	badToken := token[:len(token)-4] + "AAAA"
 	if _, _, err := VerifyLicenseToken(badToken); err == nil {
 		t.Fatal("une signature modifiée a été acceptée")
 	}
 	t.Log("✓ signature modifiée refusée")
 
-	// 8. Licence sur une autre machine (TEST machine ID).
-	otherMach := filepath.Join(tmp, "other_machine.id")
-	as3, _ := LoadActivationStore(actPath, otherMach)
-	if _, err := as3.Check(nil); err != ErrWrongDevice {
-		t.Fatalf("fichier copié sur autre machine devrait être ErrWrongDevice, obtenu %v", err)
+	// 8. Le serveur n'exige rien : vérification seule, sans reçu.
+	if _, _, err := VerifyLicenseToken(token); err != nil {
+		t.Fatalf("vérification seule refusée : %v", err)
 	}
-	t.Log("✓ activation liée à la machine (copie refusée)")
+	t.Log("✓ le serveur tourne librement (licence = accès au script)")
 }

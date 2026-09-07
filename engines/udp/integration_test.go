@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -276,24 +275,17 @@ func TestIntegration4_ExpiredWindowNewActivationRejected(t *testing.T) {
 	}
 
 	tmpDir := t.TempDir()
-	machinePath := filepath.Join(tmpDir, "machine.id")
-	actPath := filepath.Join(tmpDir, "activation.json")
 
-	as, err := LoadActivationStore(actPath, machinePath)
-	if err != nil {
-		t.Fatalf("LoadActivationStore : %v", err)
-	}
-
-	// Activation d'une licence jamais activée avec fenêtre dépassée → REFUS
-	_, err = as.Activate(token, nil)
+	// Utilisation d'une licence jamais utilisée avec fenêtre dépassée → REFUS
+	_, err = UseLicense(token, tmpDir, nil)
 	if err != ErrLicenseExpired {
-		t.Fatalf("activation doit échouer avec ErrLicenseExpired, obtenu %v", err)
+		t.Fatalf("utilisation doit échouer avec ErrLicenseExpired, obtenu %v", err)
 	}
 }
 
-// ---------- TEST 5: Licence activée → reste valide après expiration fenêtre ----------
+// ---------- TEST 5: Serveur libre après installation (plus de contrôle) ----------
 
-func TestIntegration5_ActivatedLicenseRemainsValidAfterWindow(t *testing.T) {
+func TestIntegration5_ServerRunsFreeAfterInstall(t *testing.T) {
 	maker := newMakerKeyPair(t)
 	setTestVerifyKey(t, maker.pub)
 
@@ -304,39 +296,29 @@ func TestIntegration5_ActivatedLicenseRemainsValidAfterWindow(t *testing.T) {
 	}
 
 	tmpDir := t.TempDir()
-	machinePath := filepath.Join(tmpDir, "machine.id")
-	actPath := filepath.Join(tmpDir, "activation.json")
 
-	as, err := LoadActivationStore(actPath, machinePath)
-	if err != nil {
-		t.Fatalf("LoadActivationStore : %v", err)
-	}
-
-	// Active la licence pendant la fenêtre
-	_, err = as.Activate(token, nil)
-	if err != nil {
-		t.Fatalf("activation initiale : %v", err)
+	// Utilise la licence pendant la fenêtre (ouvre l'installation)
+	if _, err := UseLicense(token, tmpDir, nil); err != nil {
+		t.Fatalf("utilisation initiale : %v", err)
 	}
 
 	// Attend l'expiration de la fenêtre
 	time.Sleep(2 * time.Second)
 
-	// Recharge l'activation (simule un redémarrage)
-	as2, err := LoadActivationStore(actPath, machinePath)
+	// Le serveur n'exige RIEN : la vérification de signature seule suffit,
+	// sans reçu, sans activation, sans machine.id.
+	verified, _, err := VerifyLicenseToken(token)
 	if err != nil {
-		t.Fatalf("rechargement : %v", err)
+		t.Fatalf("VerifyLicenseToken après expiration fenêtre doit réussir (signature seule) : %v", err)
+	}
+	if verified.ID != data.ID {
+		t.Fatalf("ID attendu %q, obtenu %q", data.ID, verified.ID)
 	}
 
-	// Vérifie que l'activation est toujours valide
-	res, err := as2.Check(nil)
-	if err != nil {
-		t.Fatalf("Check après expiration fenêtre doit réussir : %v", err)
-	}
-	if !res.Activated {
-		t.Fatal("l'activation doit rester active après expiration de la fenêtre")
-	}
-	if res.Data.ID != data.ID {
-		t.Fatalf("ID attendu %q, obtenu %q", data.ID, res.Data.ID)
+	// Le reçu d'installation est toujours là.
+	recs, err := ListReceipts(tmpDir)
+	if err != nil || len(recs) != 1 || recs[0].LicenseID != "INT-005" {
+		t.Fatalf("reçu attendu pour INT-005, obtenu %+v, err=%v", recs, err)
 	}
 }
 
@@ -352,29 +334,16 @@ func TestIntegration6_ReuseLicenseRejected(t *testing.T) {
 	}
 
 	tmpDir := t.TempDir()
-	machinePath := filepath.Join(tmpDir, "machine.id")
-	actPath := filepath.Join(tmpDir, "activation.json")
 
-	// Première activation → succès
-	as1, err := LoadActivationStore(actPath, machinePath)
-	if err != nil {
-		t.Fatalf("LoadActivationStore : %v", err)
+	// Première utilisation → succès (ouvre l'installation)
+	if _, err := UseLicense(token, tmpDir, nil); err != nil {
+		t.Fatalf("1ère utilisation : %v", err)
 	}
 
-	_, err = as1.Activate(token, nil)
-	if err != nil {
-		t.Fatalf("1ère activation : %v", err)
-	}
-
-	// Deuxième activation avec la même licence → refus
-	as2, err := LoadActivationStore(actPath, machinePath)
-	if err != nil {
-		t.Fatalf("rechargement : %v", err)
-	}
-
-	_, err = as2.Activate(token, nil)
-	if err != ErrAlreadyActivated {
-		t.Fatalf("2ème activation doit retourner ErrAlreadyActivated, obtenu %v", err)
+	// Deuxième utilisation de la même clé → refus (1 clé = 1 installation)
+	_, err = UseLicense(token, tmpDir, nil)
+	if err != ErrAlreadyUsed {
+		t.Fatalf("2ème utilisation doit retourner ErrAlreadyUsed, obtenu %v", err)
 	}
 }
 
@@ -560,21 +529,14 @@ func TestIntegration12_ActivationWithoutRegistry(t *testing.T) {
 	}
 
 	tmpDir := t.TempDir()
-	machinePath := filepath.Join(tmpDir, "machine.id")
-	actPath := filepath.Join(tmpDir, "activation.json")
 
-	as, err := LoadActivationStore(actPath, machinePath)
+	// Utilisation sans registre (nil) → doit fonctionner
+	data, err := UseLicense(token, tmpDir, nil)
 	if err != nil {
-		t.Fatalf("LoadActivationStore : %v", err)
+		t.Fatalf("UseLicense sans registre : %v", err)
 	}
-
-	// Activation sans registre (nil) → doit fonctionner
-	res, err := as.Activate(token, nil)
-	if err != nil {
-		t.Fatalf("Activate sans registre : %v", err)
-	}
-	if !res.Activated {
-		t.Fatal("l'activation doit réussir sans registre")
+	if data.ID != "INT-012" {
+		t.Fatalf("ID attendu INT-012, obtenu %q", data.ID)
 	}
 }
 

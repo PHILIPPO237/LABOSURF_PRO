@@ -56,21 +56,9 @@ func runUDPEngineModule() {
 		return
 	}
 
-	// Vérification de licence obligatoire (sauf mode développement explicite
-	// via LABOSURF_DEV=1). Ferme le contournement par le menu interactif.
-	if devModeEnabled(false) {
-		fmt.Println("⚠ MODE DÉVELOPPEMENT : vérification de licence ignorée")
-	} else if err := checkLicense(config); err != nil {
-		fmt.Printf("\nDémarrage refusé : %v\n", err)
-		fmt.Println()
-		fmt.Println("Activez une licence avec :")
-		fmt.Println("  labosurf license activate -token <jeton>")
-
-		fmt.Print("\nAppuyez sur Entrée pour revenir...")
-		_, _ = fmt.Scanln()
-
-		return
-	}
+	// NOTE : le serveur démarre librement, sans contrôle de licence.
+	// La licence LABOSURF PRO est exigée une seule fois par le script
+	// d'installation (labosurf-pro.sh), pas à chaque démarrage.
 
 	st, err := store.LoadStore(store.StorePath())
 	if err != nil {
@@ -258,7 +246,7 @@ func printUsage() {
 	fmt.Println()
 	fmt.Println("Options licence :")
 	fmt.Println("  keygen   | create | revoke | list   (administrateur)")
-	fmt.Println("  activate | status | deactivate      (utilisateur)")
+	fmt.Println("  activate | status | deactivate      (installation : 1 clé = 1 installation)")
 }
 
 func runUDPEngineCmd(args []string) {
@@ -274,10 +262,9 @@ func runUDPEngineCmd(args []string) {
 	if args[0] == "server" {
 		serverFlags := flag.NewFlagSet("server", flag.ExitOnError)
 		configPath := serverFlags.String("c", "config.json", "fichier de configuration")
-		devMode := serverFlags.Bool("dev", false, "mode développement (ignore la vérification de licence)")
 		_ = serverFlags.Parse(args[1:])
 
-		if err := runServer(*configPath, devModeEnabled(*devMode)); err != nil {
+		if err := runServer(*configPath); err != nil {
 			log.Fatal(err)
 		}
 		return
@@ -286,47 +273,6 @@ func runUDPEngineCmd(args []string) {
 	fmt.Println("Commande UDP Engine inconnue :", args[0])
 	fmt.Println("Utilisation : labosurf udp server -c config.json")
 	os.Exit(1)
-}
-
-// devModeEnabled indique si le mode développement est actif : soit via le
-// drapeau -dev explicite, soit via la variable d'environnement
-// LABOSURF_DEV=1. En dehors de ces cas, la vérification de licence est
-// TOUJOURS appliquée (aucun contournement accidentel en production).
-func devModeEnabled(flag bool) bool {
-	if flag {
-		return true
-	}
-	return os.Getenv("LABOSURF_DEV") == "1"
-}
-
-// checkLicense vérifie qu'une licence valide est activée avant de démarrer
-// l'UDP Engine. Utilise les chemins définis dans la configuration (avec valeurs
-// par défaut). Vérifie signature, expiration, révocation (si registre
-// disponible) et liaison à l'identifiant d'installation (machine ID).
-func checkLicense(cfg Config) error {
-	as, err := LoadActivationStore(cfg.License.Activation, cfg.License.MachineID)
-	if err != nil {
-		return fmt.Errorf("impossible de charger l'état d'activation : %w", err)
-	}
-
-	// Le registre est optionnel (déploiement autonome sans révocation centralisée).
-	reg, _ := LoadLicenseRegistry(cfg.License.Registry)
-
-	res, err := as.Check(reg)
-	if err != nil {
-		return fmt.Errorf("licence invalide : %w", err)
-	}
-
-	if !res.Activated || res.Status != LicenseActive {
-		return fmt.Errorf("licence non active : %s", res.Status)
-	}
-
-	expires := res.Data.ActivationUntil
-	if expires == "" {
-		expires = "illimité"
-	}
-	log.Printf("✔ Licence validée : %s (expire : %s)", res.Data.ID, expires)
-	return nil
 }
 
 func runPortalCmd(args []string) {

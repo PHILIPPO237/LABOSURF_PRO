@@ -2,27 +2,35 @@ package license
 
 import (
 	"crypto/ed25519"
-	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 )
 
+// ============================================================
+// LICENCE LABOSURF PRO — Nouveau modèle
+// ============================================================
+//
+// La licence ouvre l'ACCÈS AU SCRIPT D'INSTALLATION, pas au serveur :
+// 1 clé = 1 installation, dans les 3 heures suivant l'émission.
+// Une fois installé, le serveur tourne librement, sans contrôle.
+//
+// Le reçu d'installation (<dir>/.install_<ID>.receipt) empêche de
+// réutiliser la même clé sur LA MÊME machine. Même format que le
+// binaire engines/udp : les deux CLIs partagent les reçus.
+
 const (
-	productName        = "LABOSURF PRO"
-	licensePrefix      = "LABOSURF"
-	licenseLength      = 40
-	activationWindow   = 3 * time.Hour
-	licenseAlphabet    = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*_-+=?"
-	licenseFileName    = "license.token"
-	machineIDFileName  = "machine.id"
-	activationFileName = "activation.json"
+	productName      = "LABOSURF PRO"
+	licensePrefix    = "LABOSURF"
+	licenseLength    = 40
+	activationWindow = 3 * time.Hour
+	licenseAlphabet  = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*_-+=?"
 )
 
 // embeddedVerifyKeyHex is the production public key.
@@ -34,6 +42,20 @@ var (
 	testSignKey   ed25519.PrivateKey
 	testVerifyKey ed25519.PublicKey
 )
+
+var (
+	ErrLicenseExpired = errors.New("fenêtre d'installation dépassée")
+	ErrLicenseRevoked = errors.New("licence révoquée")
+	ErrAlreadyUsed    = errors.New("licence déjà utilisée pour une installation")
+	ErrNoReceipt      = errors.New("aucun reçu d'installation")
+)
+
+// InstallReceipt est la preuve qu'une licence a ouvert une installation.
+// Même format que engines/udp : les reçus sont partagés entre les CLIs.
+type InstallReceipt struct {
+	LicenseID   string `json:"license_id"`
+	InstalledAt string `json:"installed_at"`
+}
 
 // resolveVerifyKey returns the Ed25519 public key for signature verification.
 // Priority: test key > env var LABOSURF_LICENSE_PUBKEY > labosurf_pub.key file > embedded key.
@@ -120,18 +142,6 @@ type LicenseData struct {
 	Comment         string `json:"comment,omitempty"`
 }
 
-type LicenseToken struct {
-	Payload   string `json:"payload"`
-	Signature string `json:"signature"`
-}
-
-type ActivationRecord struct {
-	LicenseID     string `json:"license_id"`
-	MachineID     string `json:"machine_id"`
-	ActivatedAt   string `json:"activated_at"`
-	Token         string `json:"token"`
-}
-
 // getDataDir returns the data directory path
 func getDataDir() string {
 	if dir := os.Getenv("LABOSURF_DATA_DIR"); dir != "" {
@@ -140,213 +150,142 @@ func getDataDir() string {
 	return "/etc/labosurf"
 }
 
-func licenseFilePath() string {
-	return filepath.Join(getDataDir(), licenseFileName)
-}
-
-func machineIDPath() string {
-	return filepath.Join(getDataDir(), machineIDFileName)
-}
-
-func activationFilePath() string {
-	return filepath.Join(getDataDir(), activationFileName)
-}
-
-// VerifyPlatformLicense checks if the platform has a valid license
-func VerifyPlatformLicense() error {
-	tokenPath := licenseFilePath()
-	if _, err := os.Stat(tokenPath); os.IsNotExist(err) {
-		return fmt.Errorf("aucune licence trouvée (fichier %s manquant)", tokenPath)
+// receiptPathFor retourne le chemin du reçu pour un ID de licence.
+func receiptPathFor(dir, licenseID string) string {
+	if dir == "" {
+		dir = getDataDir()
 	}
+	var b strings.Builder
+	for _, r := range licenseID {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '-' || r == '_' {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('_')
+		}
+	}
+	safe := b.String()
+	if safe == "" {
+		safe = "unknown"
+	}
+	return filepath.Join(dir, ".install_"+safe+".receipt")
+}
 
-	tokenBytes, err := os.ReadFile(tokenPath)
+// VerifyToken vérifie un jeton : signature + produit + fenêtre de 3h.
+// Sans effet de bord : n'écrit aucun reçu.
+func VerifyToken(token string) (LicenseData, error) {
+	data, signature, err := ParseLicenseToken(token)
 	if err != nil {
-		return fmt.Errorf("lecture licence : %w", err)
+		return data, err
 	}
 
-	tokenStr := strings.TrimSpace(string(tokenBytes))
-	if tokenStr == "" {
-		return fmt.Errorf("licence vide")
-	}
-
-	// Parse and verify the license token (format + signature + expiration + product)
-	data, signature, err := ParseLicenseToken(tokenStr)
-	if err != nil {
-		return err
-	}
-
-	// Verify Ed25519 signature
 	pub, err := resolveVerifyKey()
 	if err != nil {
-		return fmt.Errorf("clé publique de vérification : %w", err)
+		return data, fmt.Errorf("clé publique de vérification : %w", err)
 	}
 	payloadBytes, err := canonicalPayload(data)
 	if err != nil {
-		return fmt.Errorf("sérialisation payload : %w", err)
+		return data, fmt.Errorf("sérialisation payload : %w", err)
 	}
 	if !verifySignature(payloadBytes, signature, pub) {
-		return fmt.Errorf("signature Ed25519 invalide : licence altérée")
+		return data, fmt.Errorf("signature Ed25519 invalide : licence altérée")
 	}
 
 	if data.Product != "LABOSURF PRO" {
-		return fmt.Errorf("produit incompatible : %s", data.Product)
+		return data, fmt.Errorf("produit incompatible : %s", data.Product)
 	}
 
-	activationUntil, err := time.Parse(time.RFC3339, data.ActivationUntil)
-	if err != nil {
-		return fmt.Errorf("date d'activation invalide : %w", err)
-	}
-	if time.Now().After(activationUntil) {
-		return fmt.Errorf("fenêtre d'activation expirée (%s)", activationUntil.Format(time.RFC3339))
-	}
-
-	// Check machine binding
-	machineIDPath := machineIDPath()
-	if _, err := os.Stat(machineIDPath); err == nil {
-		machineIDBytes, _ := os.ReadFile(machineIDPath)
-		currentMachineID := strings.TrimSpace(string(machineIDBytes))
-		activationPath := activationFilePath()
-		if _, err := os.Stat(activationPath); err == nil {
-			actBytes, _ := os.ReadFile(activationPath)
-			var act ActivationRecord
-			if json.Unmarshal(actBytes, &act) == nil {
-				if act.MachineID != currentMachineID {
-					return fmt.Errorf("cette licence est liée à une autre machine")
-				}
-			}
+	if data.ActivationUntil != "" {
+		activationUntil, err := time.Parse(time.RFC3339, data.ActivationUntil)
+		if err != nil {
+			return data, fmt.Errorf("date d'activation invalide : %w", err)
+		}
+		if time.Now().UTC().After(activationUntil) {
+			return data, ErrLicenseExpired
 		}
 	}
 
-	log.Printf("✔ Licence valide : ID=%s, expire le %s", data.ID, activationUntil.Format(time.RFC3339))
-	return nil
+	return data, nil
 }
 
-// Activate activates a license token
+// Activate utilise une licence pour autoriser UNE installation.
+// 1 clé = 1 installation : un reçu local bloque toute réutilisation
+// de la même clé sur cette machine.
 func Activate(token string) error {
-	// Parse and verify the token first
-	data, signature, err := ParseLicenseToken(token)
+	data, err := VerifyToken(token)
 	if err != nil {
 		return err
 	}
 
-	// Verify Ed25519 signature
-	pub, err := resolveVerifyKey()
-	if err != nil {
-		return fmt.Errorf("clé publique de vérification : %w", err)
-	}
-	payloadBytes, err := canonicalPayload(data)
-	if err != nil {
-		return fmt.Errorf("sérialisation payload : %w", err)
-	}
-	if !verifySignature(payloadBytes, signature, pub) {
-		return fmt.Errorf("signature Ed25519 invalide : licence altérée")
+	path := receiptPathFor("", data.ID)
+	if _, err := os.Stat(path); err == nil {
+		return fmt.Errorf("%w : %s", ErrAlreadyUsed, data.ID)
 	}
 
-	if data.Product != "LABOSURF PRO" {
-		return fmt.Errorf("produit incompatible : %s", data.Product)
+	rec := InstallReceipt{
+		LicenseID:   data.ID,
+		InstalledAt: time.Now().UTC().Format(time.RFC3339),
 	}
-
-	activationUntil, err := time.Parse(time.RFC3339, data.ActivationUntil)
+	raw, err := json.MarshalIndent(rec, "", "  ")
 	if err != nil {
-		return fmt.Errorf("date d'activation invalide : %w", err)
+		return fmt.Errorf("sérialisation du reçu : %w", err)
 	}
-	if time.Now().After(activationUntil) {
-		return fmt.Errorf("fenêtre d'activation expirée (%s)", activationUntil.Format(time.RFC3339))
-	}
-
-	// Generate or load machine ID
-	machineID, err := getOrCreateMachineID()
-	if err != nil {
-		return fmt.Errorf("machine ID : %w", err)
-	}
-
-	// Store license token
 	if err := os.MkdirAll(getDataDir(), 0o755); err != nil {
 		return fmt.Errorf("création dossier données : %w", err)
 	}
-
-	if err := os.WriteFile(licenseFilePath(), []byte(token), 0o600); err != nil {
-		return fmt.Errorf("écriture licence : %w", err)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		return fmt.Errorf("écriture du reçu : %w", err)
 	}
 
-	// Record activation
-	activation := ActivationRecord{
-		LicenseID:     data.ID,
-		MachineID:     machineID,
-		ActivatedAt:   time.Now().UTC().Format(time.RFC3339),
-		Token:         token,
-	}
-	actBytes, _ := json.MarshalIndent(activation, "", "  ")
-	if err := os.WriteFile(activationFilePath(), actBytes, 0o600); err != nil {
-		return fmt.Errorf("écriture activation : %w", err)
-	}
-
-	log.Printf("✔ Licence activée pour machine %s", machineID[:16]+"...")
+	fmt.Printf("✔ Licence %s acceptée : installation autorisée (1 clé = 1 installation).\n", data.ID)
 	return nil
 }
 
-// Status shows license status
+// Status affiche les reçus d'installation de cette machine.
 func Status() error {
-	tokenPath := licenseFilePath()
-	if _, err := os.Stat(tokenPath); os.IsNotExist(err) {
-		fmt.Println("Aucune licence activée")
-		return nil
-	}
-
-	tokenBytes, _ := os.ReadFile(tokenPath)
-	token := strings.TrimSpace(string(tokenBytes))
-	fmt.Printf("Licence : %s\n", maskToken(token))
-
-	// Check activation record
-	actPath := activationFilePath()
-	if _, err := os.Stat(actPath); err == nil {
-		actBytes, _ := os.ReadFile(actPath)
-		var act struct {
-			LicenseID   string `json:"license_id"`
-			MachineID   string `json:"machine_id"`
-			ActivatedAt string `json:"activated_at"`
+	dir := getDataDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Println("Aucune installation (aucune licence utilisée sur cette machine).")
+			return ErrNoReceipt
 		}
-		json.Unmarshal(actBytes, &act)
-		fmt.Printf("Machine ID : %s\n", act.MachineID)
-		fmt.Printf("Activée le : %s\n", act.ActivatedAt)
+		return fmt.Errorf("lecture du dossier %s : %w", dir, err)
 	}
 
-	// Verify
-	if err := VerifyPlatformLicense(); err != nil {
-		fmt.Printf("Statut : INVALIDE (%v)\n", err)
+	found := false
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasPrefix(name, ".install_") || !strings.HasSuffix(name, ".receipt") {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			continue
+		}
+		var rec InstallReceipt
+		if err := json.Unmarshal(raw, &rec); err != nil {
+			continue
+		}
+		fmt.Printf("Licence     : %s\n", rec.LicenseID)
+		fmt.Printf("Installée le: %s\n", rec.InstalledAt)
+		fmt.Println()
+		found = true
+	}
+
+	if !found {
+		fmt.Println("Aucune installation (aucune licence utilisée sur cette machine).")
+		return ErrNoReceipt
+	}
+	return nil
+}
+
+// Verify vérifie un jeton passé en argument, sans l'utiliser.
+func Verify(token string) error {
+	data, err := VerifyToken(token)
+	if err != nil {
 		return err
 	}
-	fmt.Println("Statut : VALIDE")
+	fmt.Printf("✔ Signature valide : licence %s utilisable pour UNE installation.\n", data.ID)
 	return nil
-}
-
-// Verify verifies the license without activating
-func Verify() error {
-	return VerifyPlatformLicense()
-}
-
-func maskToken(token string) string {
-	if len(token) <= 8 {
-		return "****"
-	}
-	return token[:4] + "****" + token[len(token)-4:]
-}
-
-func getOrCreateMachineID() (string, error) {
-	path := machineIDPath()
-	if data, err := os.ReadFile(path); err == nil {
-		return strings.TrimSpace(string(data)), nil
-	}
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("génération machine ID : %w", err)
-	}
-	hexID := hex.EncodeToString(b)
-	if err := os.MkdirAll(getDataDir(), 0o755); err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(path, []byte(hexID), 0o600); err != nil {
-		return "", err
-	}
-	return hexID, nil
 }

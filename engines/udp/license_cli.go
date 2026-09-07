@@ -5,11 +5,16 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 )
 
 // ============================================================
 // CLI LICENCE — LABOSURF PRO
 // ============================================================
+//
+// Nouveau modèle : la licence ouvre l'ACCÈS AU SCRIPT D'INSTALLATION,
+// pas au serveur. 1 clé = 1 installation. Une fois installé, le
+// serveur tourne librement, sans contrôle de licence.
 //
 // Deux rôles distincts :
 //
@@ -17,13 +22,13 @@ import (
 //	  keygen    génère la paire de clés Ed25519
 //	  create    émet et signe une licence
 //	  revoke    révoque une licence
-//	  list      liste les licences émises
+//	  list      liste les licences connues
 //
-//	UTILISATEUR LABOSURF PRO (clé publique uniquement)
-//	  activate    active une licence reçue
-//	  status      affiche l'état d'activation
-//	  verify      vérifie un jeton de licence
-//	  deactivate  supprime l'activation locale
+//	INSTALLATION (clé publique uniquement)
+//	  activate    utilise une licence pour autoriser UNE installation
+//	  status      affiche les reçus d'installation de cette machine
+//	  verify      vérifie un jeton de licence (sans l'utiliser)
+//	  deactivate  supprime les reçus (réinstallation avec NOUVELLE licence)
 
 func runLicense(args []string) error {
 	if len(args) == 0 {
@@ -45,7 +50,7 @@ func runLicense(args []string) error {
 	case "list":
 		return licenseList(rest)
 
-	// --- Utilisateur ---
+	// --- Installation ---
 	case "activate":
 		return licenseActivate(rest)
 	case "status":
@@ -76,17 +81,17 @@ func printLicenseUsage() {
 	fmt.Println("  revoke      Révoquer une licence")
 	fmt.Println("  list        Lister les licences émises")
 	fmt.Println()
-	fmt.Println("UTILISATEUR (clé publique uniquement) :")
-	fmt.Println("  activate    Activer une licence reçue")
-	fmt.Println("  status      Afficher l'état d'activation")
-	fmt.Println("  verify      Vérifier un jeton de licence")
-	fmt.Println("  deactivate  Supprimer l'activation locale")
+	fmt.Println("INSTALLATION (clé publique uniquement, 1 clé = 1 installation) :")
+	fmt.Println("  activate    Utiliser une licence pour autoriser UNE installation")
+	fmt.Println("  status      Afficher les reçus d'installation de cette machine")
+	fmt.Println("  verify      Vérifier un jeton de licence (sans l'utiliser)")
+	fmt.Println("  deactivate  Supprimer les reçus (réinstallation avec NOUVELLE licence)")
 	fmt.Println()
 	fmt.Println("Clés :")
 	fmt.Println("  Clé privée (ADMIN)  : LABOSURF_LICENSE_PRIVKEY ou labosurf_admin.key")
 	fmt.Println("  Clé publique        : LABOSURF_LICENSE_PUBKEY  ou labosurf_pub.key")
 	fmt.Println()
-	fmt.Println("La clé privée ne doit JAMAIS être distribuée aux utilisateurs.")
+	fmt.Println("La clé privée ne doit JAMAIS être distribuée aux exploitants de serveurs.")
 }
 
 // registryFlag ajoute l'option -registry commune.
@@ -130,7 +135,7 @@ func licenseKeygen(args []string) error {
 	fmt.Println()
 	fmt.Println("⚠ IMPORTANT")
 	fmt.Println("  • Conservez la clé PRIVÉE en lieu sûr.")
-	fmt.Println("  • Ne la distribuez JAMAIS aux utilisateurs.")
+	fmt.Println("  • Ne la distribuez JAMAIS aux exploitants de serveurs.")
 	fmt.Println("  • Distribuez uniquement la clé PUBLIQUE (elle n'est pas secrète).")
 	return nil
 }
@@ -186,7 +191,7 @@ func licenseCreate(args []string) error {
 		fmt.Printf("  Fichier     : %s\n", *out)
 	}
 	fmt.Println()
-	fmt.Println("Jeton à transmettre à l'utilisateur :")
+	fmt.Println("Jeton à transmettre à l'exploitant du serveur :")
 	fmt.Println()
 	fmt.Println(token)
 	return nil
@@ -235,9 +240,9 @@ func licenseList(args []string) error {
 		return nil
 	}
 
-	fmt.Printf("%-16s %-10s %-22s %-8s %s\n",
-		"ID", "ÉTAT", "EXPIRATION", "COMPTES", "ACTIVÉE LE")
-	fmt.Println(strings.Repeat("-", 78))
+	fmt.Printf("%-16s %-10s %-22s %-20s %s\n",
+		"ID", "ÉTAT", "ACTIVATION AVANT", "COMMENTAIRE", "ACTIVÉ LE")
+	fmt.Println(strings.Repeat("-", 92))
 
 	for _, e := range entries {
 		exp := e.ActivationUntil
@@ -248,14 +253,26 @@ func licenseList(args []string) error {
 		if act == "" {
 			act = "-"
 		}
-		fmt.Printf("%-16s %-10s %-22s %-8d %s\n",
-			e.ID, e.Status, exp, 0, act)
+		comment := e.Comment
+		if len(comment) > 20 {
+			comment = comment[:17] + "..."
+		}
+		if comment == "" {
+			comment = "-"
+		}
+		fmt.Printf("%-16s %-10s %-22s %-20s %s\n",
+			e.ID, e.Status, exp, comment, act)
 	}
 
 	return nil
 }
 
-// ---------- Utilisateur ----------
+// ---------- Installation (1 clé = 1 installation) ----------
+
+// receiptDirFlag ajoute l'option -receipt-dir commune.
+func receiptDirFlag(fs *flag.FlagSet) *string {
+	return fs.String("receipt-dir", "", "dossier des reçus d'installation (défaut /etc/labosurf)")
+}
 
 // readToken lit un jeton depuis -token, -file ou l'entrée fournie.
 func readToken(token, file string) (string, error) {
@@ -277,8 +294,7 @@ func licenseActivate(args []string) error {
 	registry := registryFlag(fs)
 	token := fs.String("token", "", "jeton de licence")
 	file := fs.String("file", "", "fichier contenant le jeton")
-	actPath := fs.String("activation", defaultActivationPath, "fichier d'activation")
-	machinePath := fs.String("machine", defaultMachineIDPath, "fichier d'identifiant d'installation")
+	receiptDir := receiptDirFlag(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -288,32 +304,20 @@ func licenseActivate(args []string) error {
 		return err
 	}
 
-	as, err := LoadActivationStore(*actPath, *machinePath)
-	if err != nil {
-		return err
-	}
-
-	// Le registre est optionnel côté utilisateur (déploiement autonome).
+	// Le registre local est optionnel (blocage manuel d'un ID révoqué).
 	reg, _ := LoadLicenseRegistry(*registry)
 
-	res, err := as.Activate(tok, reg)
+	data, err := UseLicense(tok, *receiptDir, reg)
 	if err != nil {
 		switch err {
-		case ErrAlreadyActivated:
-			// L'identifiant vient de l'enregistrement local si présent,
-			// sinon des données de la licence (cas du refus par registre).
-			id := res.Record.LicenseID
-			if id == "" {
-				id = res.Data.ID
-			}
-			fmt.Println("✘ Cette licence a déjà été activée et ne peut pas l'être une seconde fois.")
-			fmt.Printf("  Licence : %s\n", id)
-			if res.Record.ActivatedAt != "" {
-				fmt.Printf("  Activée le : %s\n", res.Record.ActivatedAt)
-			}
+		case ErrAlreadyUsed:
+			fmt.Println("✘ Cette licence a déjà ouvert une installation et ne peut pas être réutilisée.")
+			fmt.Printf("  Licence : %s\n", data.ID)
+			fmt.Println("  Pour installer à nouveau, demandez une NOUVELLE licence.")
 			return err
 		case ErrLicenseExpired:
-			fmt.Println("✘ Licence expirée.")
+			fmt.Println("✘ Fenêtre d'installation dépassée (3h après émission).")
+			fmt.Println("  Demandez une NOUVELLE licence.")
 			return err
 		case ErrLicenseRevoked:
 			fmt.Println("✘ Licence révoquée par l'administrateur.")
@@ -330,68 +334,39 @@ func licenseActivate(args []string) error {
 		}
 	}
 
-	expires := res.Data.ActivationUntil
-	if expires == "" {
-		expires = "illimité"
-	}
-
-	fmt.Println("✔ Licence activée. LABOSURF PRO est autorisé.")
+	fmt.Println("✔ Licence acceptée. Installation autorisée (1 clé = 1 installation).")
 	fmt.Println()
-	fmt.Printf("  Licence     : %s\n", res.Data.ID)
-	fmt.Printf("  Produit     : %s\n", res.Data.Product)
-	fmt.Printf("  Expire le   : %s\n", expires)
-	fmt.Printf("  Activée le  : %s\n", res.Record.ActivatedAt)
-	fmt.Printf("  Installation: %s…\n", res.Record.MachineID[:16])
+	fmt.Printf("  Licence     : %s\n", data.ID)
+	fmt.Printf("  Produit     : %s\n", data.Product)
+	fmt.Printf("  Installée le: %s\n", time.Now().UTC().Format(time.RFC3339))
 	return nil
 }
 
 func licenseStatus(args []string) error {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
-	registry := registryFlag(fs)
-	actPath := fs.String("activation", defaultActivationPath, "fichier d'activation")
-	machinePath := fs.String("machine", defaultMachineIDPath, "fichier d'identifiant d'installation")
+	receiptDir := receiptDirFlag(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	as, err := LoadActivationStore(*actPath, *machinePath)
+	recs, err := ListReceipts(*receiptDir)
 	if err != nil {
 		return err
 	}
 
-	reg, _ := LoadLicenseRegistry(*registry)
-
-	res, err := as.Check(reg)
-	if err != nil {
-		switch err {
-		case ErrActivationMissing:
-			fmt.Println("✘ Aucune licence activée.")
-			fmt.Println("  Activez avec : labosurf license activate -token <jeton>")
-		case ErrWrongDevice:
-			fmt.Println("✘ Activation invalide : elle provient d'une autre installation.")
-		case ErrLicenseExpired:
-			fmt.Println("✘ Licence expirée.")
-		case ErrLicenseRevoked:
-			fmt.Println("✘ Licence révoquée par l'administrateur.")
-		case ErrLicenseTampered:
-			fmt.Println("✘ Activation altérée : signature invalide.")
-		default:
-			fmt.Printf("✘ Licence non valide : %v\n", err)
-		}
-		return err
+	if len(recs) == 0 {
+		fmt.Println("✘ Aucune installation (aucune licence utilisée sur cette machine).")
+		fmt.Println("  Installez avec labosurf-pro.sh ou : labosurf license activate -token <jeton>")
+		return ErrNoReceipt
 	}
 
-	expires := res.Data.ActivationUntil
-	if expires == "" {
-		expires = "illimité"
-	}
-
-	fmt.Println("✔ Licence active. LABOSURF PRO est autorisé.")
+	fmt.Println("✔ Installations autorisées sur cette machine :")
 	fmt.Println()
-	fmt.Printf("  Licence     : %s\n", res.Data.ID)
-	fmt.Printf("  État        : %s\n", res.Status)
-	fmt.Printf("  Expire le   : %s\n", expires)
-	fmt.Printf("  Activée le  : %s\n", res.Record.ActivatedAt)
+	for _, r := range recs {
+		fmt.Printf("  Licence     : %s\n", r.LicenseID)
+		fmt.Printf("  Installée le: %s\n", r.InstalledAt)
+		fmt.Println()
+	}
 	return nil
 }
 
@@ -399,6 +374,7 @@ func licenseVerify(args []string) error {
 	fs := flag.NewFlagSet("verify", flag.ContinueOnError)
 	token := fs.String("token", "", "jeton de licence")
 	file := fs.String("file", "", "fichier contenant le jeton")
+	printID := fs.Bool("print-id", false, "afficher seulement l'ID de la licence")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -409,25 +385,40 @@ func licenseVerify(args []string) error {
 	}
 
 	data, status, verifyErr := VerifyLicenseToken(tok)
+	if verifyErr != nil {
+		// Affichage détaillé plus bas.
+	} else if data.ActivationUntil != "" {
+		// verify ne contrôle que la signature : la fenêtre de 3h est
+		// contrôlée ici, au moment d'autoriser UNE installation.
+		if until, err := time.Parse(time.RFC3339, data.ActivationUntil); err == nil &&
+			time.Now().UTC().After(until) {
+			status = LicenseExpired
+			verifyErr = ErrLicenseExpired
+		}
+	}
+	if *printID && verifyErr == nil {
+		fmt.Println(data.ID)
+		return nil
+	}
 
-	expires := data.ActivationUntil
-	if expires == "" {
-		expires = "illimité"
+	window := data.ActivationUntil
+	if window == "" {
+		window = "illimité"
 	}
 
 	fmt.Printf("  ID          : %s\n", data.ID)
 	fmt.Printf("  Produit     : %s\n", data.Product)
 	fmt.Printf("  Émise le    : %s\n", data.IssuedAt)
-	fmt.Printf("  Expire le   : %s\n", expires)
+	fmt.Printf("  Installation avant : %s\n", window)
 	fmt.Printf("  Statut      : %s\n", status)
 	fmt.Println()
 
 	switch status {
 	case LicenseActive:
-		fmt.Println("✔ Signature valide, licence utilisable.")
+		fmt.Println("✔ Signature valide : licence utilisable pour UNE installation.")
 		return nil
 	case LicenseExpired:
-		fmt.Println("✘ Licence expirée.")
+		fmt.Println("✘ Fenêtre d'installation dépassée (3h).")
 	case LicenseTampered:
 		fmt.Println("✘ Signature invalide : licence altérée ou clé publique incorrecte.")
 	default:
@@ -439,25 +430,20 @@ func licenseVerify(args []string) error {
 
 func licenseDeactivate(args []string) error {
 	fs := flag.NewFlagSet("deactivate", flag.ContinueOnError)
-	actPath := fs.String("activation", defaultActivationPath, "fichier d'activation")
-	machinePath := fs.String("machine", defaultMachineIDPath, "fichier d'identifiant d'installation")
+	receiptDir := receiptDirFlag(fs)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	as, err := LoadActivationStore(*actPath, *machinePath)
-	if err != nil {
-		return err
-	}
-
-	if err := as.Deactivate(); err != nil {
-		if err == ErrActivationMissing {
-			fmt.Println("Aucune activation à supprimer.")
+	if err := ClearReceipts(*receiptDir); err != nil {
+		if err == ErrNoReceipt {
+			fmt.Println("Aucun reçu à supprimer.")
 			return nil
 		}
 		return err
 	}
 
-	fmt.Println("✔ Activation locale supprimée.")
+	fmt.Println("✔ Reçus d'installation supprimés.")
+	fmt.Println("  Réinstallez avec une NOUVELLE licence (1 clé = 1 installation).")
 	return nil
 }

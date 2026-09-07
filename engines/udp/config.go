@@ -28,14 +28,13 @@ type Config struct {
 		Listen  string `json:"listen"`
 	} `json:"portal"`
 
-	// License configure les chemins des fichiers de licence utilisés lors
-	// de la vérification au démarrage. Vides => valeurs par défaut.
-	// La vérification est TOUJOURS active en production ; seul le drapeau
-	// -dev (ou LABOSURF_DEV=1) permet de la contourner pour le développement.
+	// License configure le dossier des reçus d'installation utilisés par
+	// les commandes `labosurf license` (installation). Vide => valeur
+	// par défaut. Le serveur démarre librement, sans contrôle de licence :
+	// la licence ouvre l'accès au script d'installation, pas au serveur.
+	// (Les anciennes clés activation/machine_id/registry sont ignorées.)
 	License struct {
-		Activation string `json:"activation"`
-		MachineID  string `json:"machine_id"`
-		Registry   string `json:"registry"`
+		ReceiptDir string `json:"receipt_dir"`
 	} `json:"license"`
 
 	TUN struct {
@@ -74,16 +73,8 @@ func loadConfig(path string) (Config, error) {
 		config.Portal.Listen = defaultPortalListen
 	}
 
-	if config.License.Activation == "" {
-		config.License.Activation = defaultActivationPath
-	}
-
-	if config.License.MachineID == "" {
-		config.License.MachineID = defaultMachineIDPath
-	}
-
-	if config.License.Registry == "" {
-		config.License.Registry = defaultRegistryPath
+	if config.License.ReceiptDir == "" {
+		config.License.ReceiptDir = defaultReceiptDir
 	}
 
 	if config.TUN.Name == "" {

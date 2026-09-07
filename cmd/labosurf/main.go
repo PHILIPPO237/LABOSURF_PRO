@@ -108,10 +108,9 @@ func startEngine(args []string) error {
 	if len(args) < 2 {
 		return fmt.Errorf("usage : engine start <name>")
 	}
-	// Vérifier la licence avant de démarrer un moteur
-	if err := license.VerifyPlatformLicense(); err != nil {
-		return fmt.Errorf("licence invalide : %w", err)
-	}
+	// NOTE : aucune vérification de licence au démarrage des moteurs.
+	// La licence LABOSURF PRO ouvre l'accès au script d'installation,
+	// pas au serveur : une fois installé, tout démarre librement.
 	e, err := engine.Get(args[1])
 	if err != nil {
 		return err
@@ -153,7 +152,7 @@ func printRootUsage() {
 
 func runLicenseCmd(args []string) error {
 	if len(args) == 0 {
-		fmt.Println("Usage : labosurf engine license <activate|status|verify>")
+		fmt.Println("Usage : labosurf engine license <activate <token>|status|verify <token>>")
 		return nil
 	}
 	switch args[0] {
@@ -165,7 +164,10 @@ func runLicenseCmd(args []string) error {
 	case "status":
 		return license.Status()
 	case "verify":
-		return license.Verify()
+		if len(args) < 2 {
+			return fmt.Errorf("usage : license verify <token>")
+		}
+		return license.Verify(args[1])
 	default:
 		return fmt.Errorf("commande licence inconnue : %s", args[0])
 	}

@@ -37,6 +37,9 @@ type Server struct {
 
 	// tunMu protège l'accès à s.tun pour éviter les data races
 	tunMu sync.RWMutex
+
+	// tunWG permet d'attendre la fin de tunLoop avant de fermer le TUN
+	tunWG sync.WaitGroup
 }
 
 func NewServer(config Config, st *store.Store) (*Server, error) {
@@ -106,6 +109,9 @@ func (s *Server) Close() error {
 
 		s.mu.Unlock()
 
+		// Attendre que tunLoop se termine avant de fermer le TUN
+		s.tunWG.Wait()
+
 		// Fermer le TUN avec le mutex dédié pour éviter les data races
 		s.tunMu.Lock()
 		if s.tun != nil {
@@ -158,7 +164,11 @@ func (s *Server) Run(ctx context.Context) error {
 	// Démarrer le loop TUN si l'interface est disponible.
 	// Ce goroutine lit les paquets IP depuis TUN et les envoie aux clients UDP.
 	if s.tun != nil {
-		go s.tunLoop(ctx)
+		s.tunWG.Add(1)
+		go func() {
+			defer s.tunWG.Done()
+			s.tunLoop(ctx)
+		}()
 	}
 
 	buffer := AcquireTunnelBuffer()
@@ -904,7 +914,6 @@ func (s *Server) cleanupExpiredStreams() {
 func runServerContext(
 	configPath string,
 	ctx context.Context,
-	devMode bool,
 ) error {
 	config, err := loadConfig(configPath)
 	if err != nil {
@@ -914,14 +923,10 @@ func runServerContext(
 		)
 	}
 
-	// Vérification de licence AVANT tout démarrage réseau. En production la
-	// vérification est obligatoire ; seul le mode développement (-dev ou
-	// LABOSURF_DEV=1) permet de la contourner.
-	if devMode {
-		log.Println("⚠ MODE DÉVELOPPEMENT : vérification de licence ignorée")
-	} else if err := checkLicense(config); err != nil {
-		return fmt.Errorf("démarrage refusé : %w", err)
-	}
+	// NOTE : aucune vérification de licence au démarrage du serveur.
+	// La licence LABOSURF PRO ouvre l'ACCÈS AU SCRIPT D'INSTALLATION
+	// (vérifiée une seule fois par labosurf-pro.sh). Une fois installé,
+	// le serveur démarre librement : ni activation.json, ni machine.id.
 
 	// Le store est la source de vérité des comptes. S'il contient au moins
 	// un compte, il fait autorité sur la section auth de la configuration.
@@ -1006,7 +1011,7 @@ func runServerContext(
 	return server.Run(ctx)
 }
 
-func runServer(configPath string, devMode bool) error {
+func runServer(configPath string) error {
 	ctx, cancel := signal.NotifyContext(
 		context.Background(),
 		os.Interrupt,
@@ -1014,5 +1019,5 @@ func runServer(configPath string, devMode bool) error {
 	)
 	defer cancel()
 
-	return runServerContext(configPath, ctx, devMode)
+	return runServerContext(configPath, ctx)
 }

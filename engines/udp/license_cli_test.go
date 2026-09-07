@@ -7,12 +7,10 @@ import (
 	"testing"
 )
 
-func tempLicensePaths(t *testing.T) (registry, activation, machine string) {
+func tempLicensePaths(t *testing.T) (registry, receiptDir string) {
 	t.Helper()
 	dir := t.TempDir()
-	return filepath.Join(dir, "licenses.json"),
-		filepath.Join(dir, "activation.json"),
-		filepath.Join(dir, "machine.id")
+	return filepath.Join(dir, "licenses.json"), dir
 }
 
 func TestLicenseKeygen(t *testing.T) {
@@ -68,7 +66,7 @@ func TestLicenseKeygenRefusesExisting(t *testing.T) {
 }
 
 func TestLicenseCreateAndRegistry(t *testing.T) {
-	registry, _, _ := tempLicensePaths(t)
+	registry, _ := tempLicensePaths(t)
 
 	if err := licenseCreate([]string{"-registry", registry, "-id", "LIC-001", "-comment", "test"}); err != nil {
 		t.Fatalf("licenseCreate : %v", err)
@@ -94,21 +92,21 @@ func TestLicenseCreateAndRegistry(t *testing.T) {
 }
 
 func TestLicenseCreateMissingID(t *testing.T) {
-	registry, _, _ := tempLicensePaths(t)
+	registry, _ := tempLicensePaths(t)
 	if err := licenseCreate([]string{"-registry", registry}); err == nil {
 		t.Fatal("licenseCreate doit refuser un -id absent")
 	}
 }
 
 func TestLicenseListEmpty(t *testing.T) {
-	registry, _, _ := tempLicensePaths(t)
+	registry, _ := tempLicensePaths(t)
 	if err := licenseList([]string{"-registry", registry}); err != nil {
 		t.Fatalf("licenseList (vide) : %v", err)
 	}
 }
 
 func TestLicenseListNonEmpty(t *testing.T) {
-	registry, _, _ := tempLicensePaths(t)
+	registry, _ := tempLicensePaths(t)
 	licenseCreate([]string{"-registry", registry, "-id", "LIC-001"})
 
 	if err := licenseList([]string{"-registry", registry}); err != nil {
@@ -117,7 +115,7 @@ func TestLicenseListNonEmpty(t *testing.T) {
 }
 
 func TestLicenseRevoke(t *testing.T) {
-	registry, _, _ := tempLicensePaths(t)
+	registry, _ := tempLicensePaths(t)
 	licenseCreate([]string{"-registry", registry, "-id", "LIC-001"})
 
 	if err := licenseRevoke([]string{"-registry", registry, "-id", "LIC-001"}); err != nil {
@@ -136,14 +134,14 @@ func TestLicenseRevoke(t *testing.T) {
 }
 
 func TestLicenseRevokeMissingID(t *testing.T) {
-	registry, _, _ := tempLicensePaths(t)
+	registry, _ := tempLicensePaths(t)
 	if err := licenseRevoke([]string{"-registry", registry}); err == nil {
 		t.Fatal("licenseRevoke doit refuser un -id absent")
 	}
 }
 
 func TestLicenseFullLifecycleCLI(t *testing.T) {
-	registry, activation, machine := tempLicensePaths(t)
+	registry, receiptDir := tempLicensePaths(t)
 
 	// 1. Émission côté administrateur.
 	if err := licenseCreate([]string{"-registry", registry, "-id", "LIC-CLI-1"}); err != nil {
@@ -155,58 +153,52 @@ func TestLicenseFullLifecycleCLI(t *testing.T) {
 	entries := reg.List()
 	token := entries[0].Token
 
-	// 2. Activation côté utilisateur (VPS).
+	// 2. Utilisation de la licence (ouvre UNE installation).
 	if err := licenseActivate([]string{
 		"-registry", registry,
-		"-activation", activation,
-		"-machine", machine,
+		"-receipt-dir", receiptDir,
 		"-token", token,
 	}); err != nil {
 		t.Fatalf("licenseActivate : %v", err)
 	}
 
-	// 3. Statut : licence active.
+	// 3. Statut : reçu présent.
 	if err := licenseStatus([]string{
-		"-registry", registry,
-		"-activation", activation,
-		"-machine", machine,
+		"-receipt-dir", receiptDir,
 	}); err != nil {
 		t.Fatalf("licenseStatus : %v", err)
 	}
 
-	// 4. La réactivation de la même licence doit être refusée.
+	// 4. La réutilisation de la même licence doit être refusée.
 	if err := licenseActivate([]string{
 		"-registry", registry,
-		"-activation", activation,
-		"-machine", machine,
+		"-receipt-dir", receiptDir,
 		"-token", token,
 	}); err == nil {
-		t.Fatal("la réactivation de la même licence doit être refusée")
+		t.Fatal("la réutilisation de la même licence doit être refusée")
 	}
 
-	// 5. Vérification du jeton.
+	// 5. Vérification du jeton (sans l'utiliser).
 	if err := licenseVerify([]string{"-token", token}); err != nil {
 		t.Fatalf("licenseVerify : %v", err)
 	}
 
-	// 6. Désactivation locale.
-	if err := licenseDeactivate([]string{"-activation", activation, "-machine", machine}); err != nil {
+	// 6. Suppression des reçus.
+	if err := licenseDeactivate([]string{"-receipt-dir", receiptDir}); err != nil {
 		t.Fatalf("licenseDeactivate : %v", err)
 	}
 
-	// 7. Statut après désactivation : erreur attendue.
+	// 7. Statut après suppression : erreur attendue.
 	if err := licenseStatus([]string{
-		"-registry", registry,
-		"-activation", activation,
-		"-machine", machine,
+		"-receipt-dir", receiptDir,
 	}); err == nil {
-		t.Fatal("licenseStatus doit échouer après désactivation")
+		t.Fatal("licenseStatus doit échouer après suppression des reçus")
 	}
 }
 
 func TestLicenseActivateErrorsNoToken(t *testing.T) {
-	_, activation, machine := tempLicensePaths(t)
-	err := licenseActivate([]string{"-activation", activation, "-machine", machine})
+	_, receiptDir := tempLicensePaths(t)
+	err := licenseActivate([]string{"-receipt-dir", receiptDir})
 	if err == nil {
 		t.Fatal("licenseActivate doit exiger un jeton")
 	}
@@ -216,15 +208,14 @@ func TestLicenseActivateErrorsNoToken(t *testing.T) {
 }
 
 func TestLicenseActivateViaFile(t *testing.T) {
-	registry, activation, machine := tempLicensePaths(t)
+	registry, receiptDir := tempLicensePaths(t)
 	tokenFile := filepath.Join(t.TempDir(), "token.txt")
 
 	licenseCreate([]string{"-registry", registry, "-id", "LIC-FILE-1", "-out", tokenFile})
 
 	if err := licenseActivate([]string{
 		"-registry", registry,
-		"-activation", activation,
-		"-machine", machine,
+		"-receipt-dir", receiptDir,
 		"-file", tokenFile,
 	}); err != nil {
 		t.Fatalf("licenseActivate (-file) : %v", err)
@@ -232,9 +223,9 @@ func TestLicenseActivateViaFile(t *testing.T) {
 }
 
 func TestLicenseDeactivateWithoutActivation(t *testing.T) {
-	_, activation, machine := tempLicensePaths(t)
-	if err := licenseDeactivate([]string{"-activation", activation, "-machine", machine}); err != nil {
-		t.Fatalf("licenseDeactivate sans activation doit être sans erreur : %v", err)
+	_, receiptDir := tempLicensePaths(t)
+	if err := licenseDeactivate([]string{"-receipt-dir", receiptDir}); err != nil {
+		t.Fatalf("licenseDeactivate sans reçu doit être sans erreur : %v", err)
 	}
 }
 
@@ -274,9 +265,24 @@ func TestLicenseVerifyTampered(t *testing.T) {
 }
 
 func TestLicenseStatusWithoutActivation(t *testing.T) {
-	_, activation, machine := tempLicensePaths(t)
-	if err := licenseStatus([]string{"-activation", activation, "-machine", machine}); err == nil {
-		t.Fatal("licenseStatus sans activation doit retourner une erreur")
+	_, receiptDir := tempLicensePaths(t)
+	if err := licenseStatus([]string{"-receipt-dir", receiptDir}); err == nil {
+		t.Fatal("licenseStatus sans reçu doit retourner une erreur")
+	}
+}
+
+func TestLicenseVerifyPrintID(t *testing.T) {
+	registry, _ := tempLicensePaths(t)
+
+	if err := licenseCreate([]string{"-registry", registry, "-id", "LIC-PID"}); err != nil {
+		t.Fatalf("licenseCreate : %v", err)
+	}
+
+	reg, _ := LoadLicenseRegistry(registry)
+	token := reg.List()[0].Token
+
+	if err := licenseVerify([]string{"-token", token, "-print-id"}); err != nil {
+		t.Fatalf("licenseVerify -print-id : %v", err)
 	}
 }
 

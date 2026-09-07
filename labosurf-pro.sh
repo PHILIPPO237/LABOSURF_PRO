@@ -14,9 +14,7 @@ CONFIG_DIR="/etc/labosurf"
 BIN_PATH="/usr/local/bin/labosurf"
 SERVICE_PATH="/etc/systemd/system/labosurf.service"
 PUBKEY_PATH="${CONFIG_DIR}/license_pub.key"
-ACTIVATION_PATH="${CONFIG_DIR}/activation.json"
-MACHINE_PATH="${CONFIG_DIR}/machine.id"
-LICENSE_REGISTRY_PATH="${CONFIG_DIR}/licenses.json"
+RECEIPT_DIR="${CONFIG_DIR}"
 GITHUB_REPO="PHILIPPO237/LABOSURF_PRO"
 GITHUB_RELEASE="https://github.com/${GITHUB_REPO}/releases/latest/download"
 export BIN_PATH CONFIG_DIR GITHUB_REPO GITHUB_RELEASE
@@ -357,9 +355,7 @@ prepare_dirs() {
     "listen": ":8080"
   },
   "license": {
-    "activation": "/etc/labosurf/activation.json",
-    "machine_id": "/etc/labosurf/machine.id",
-    "registry": "/etc/labosurf/licenses.json"
+    "receipt_dir": "/etc/labosurf"
   },
   "tun": {
     "enabled": true,
@@ -377,20 +373,31 @@ JSON
 }
 
 activate_license() {
-  local token
+  # La licence ouvre l'ACCÈS AU SCRIPT D'INSTALLATION (1 clé = 1 installation).
+  # Vérifiée une seule fois ici : signature Ed25519 + fenêtre de 3h.
+  # Le serveur tournera ensuite librement, sans contrôle de licence.
+  local token id
   [[ "${LABOSURF_DEV:-0}" == "1" ]] && { info "Mode DÉVELOPPEMENT (LABOSURF_DEV=1) : licence non requise."; return 0; }
   echo
   printf '  %bLicence LABOSURF PRO%b\n' "$BOLD$CYAN" "$RESET"
+  printf '  %b1 clé = 1 installation • valable 3h après émission%b\n' "$DIM" "$RESET"
   echo
   printf '  Entrez le jeton de licence : '
   IFS= read -r token < /dev/tty
   [[ -n "${token//[[:space:]]/}" ]] || die "Aucune licence fournie. Installation annulée."
-  LABOSURF_LICENSE_PUBKEY="$(cat "$PUBKEY_PATH")" \
-    "$BIN_PATH" license activate \
-      -token "$token" \
-      -activation "$ACTIVATION_PATH" \
-      -machine "$MACHINE_PATH" \
-      -registry "$LICENSE_REGISTRY_PATH"
+  id="$(LABOSURF_LICENSE_PUBKEY="$(cat "$PUBKEY_PATH")" \
+    "$BIN_PATH" license verify -token "$token" -print-id)" \
+    || die "Licence refusée (signature invalide ou fenêtre de 3h dépassée)."
+  [[ -n "$id" ]] || die "Licence refusée (identifiant illisible)."
+  local safe_id; safe_id="$(printf '%s' "$id" | tr -c 'A-Za-z0-9_-' '_')"
+  [[ -n "$safe_id" ]] || safe_id="unknown"
+  if [[ -f "${RECEIPT_DIR}/.install_${safe_id}.receipt" ]]; then
+    die "Cette licence a déjà ouvert une installation (1 clé = 1 installation). Demandez une NOUVELLE licence."
+  fi
+  printf '{"license_id":"%s","installed_at":"%s"}\n' "$id" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    > "${RECEIPT_DIR}/.install_${safe_id}.receipt.tmp"
+  chmod 0600 "${RECEIPT_DIR}/.install_${safe_id}.receipt.tmp"
+  mv "${RECEIPT_DIR}/.install_${safe_id}.receipt.tmp" "${RECEIPT_DIR}/.install_${safe_id}.receipt"
 }
 
 install_service() {
@@ -525,8 +532,8 @@ SH
 }
 
 final_check() {
-  "$BIN_PATH" license status -activation "$ACTIVATION_PATH" -machine "$MACHINE_PATH" >/dev/null 2>&1 || \
-    die "L'activation n'a pas pu être vérifiée après installation."
+  "$BIN_PATH" license status -receipt-dir "$RECEIPT_DIR" >/dev/null 2>&1 || \
+    die "Le reçu d'installation est introuvable après installation."
   systemctl is-enabled labosurf.service >/dev/null
   systemctl is-active --quiet labosurf.service || { systemctl --no-pager --full status labosurf.service >&2 || true; die "LABOSURF PRO n'a pas démarré correctement."; }
 }
@@ -563,7 +570,7 @@ main() {
   run_step 'Installation de la clé publique...' fetch_public_key
   step_ok 'Clé publique installée'
   activate_license
-  step_ok 'Licence activée'
+  step_ok 'Installation autorisée (1 clé = 1 installation)'
 
   # ── [7/9] Moteurs ──────────────────────────────────────
   step_begin 7 'Installation des moteurs'
