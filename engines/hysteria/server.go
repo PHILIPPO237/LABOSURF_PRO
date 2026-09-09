@@ -41,6 +41,7 @@ type HysteriaUser struct {
 
 type HysteriaSession struct {
 	ID        string
+	rawID     []byte // les mêmes octets que ID, mais bruts (pas hex)
 	User      string
 	ClientIP  string
 	StartedAt time.Time
@@ -50,12 +51,37 @@ type HysteriaSession struct {
 }
 
 type HysteriaServer struct {
-	config   HysteriaConfig
-	conn     *net.UDPConn
-	mu       sync.RWMutex
-	sessions map[string]*HysteriaSession
-	frags    map[string]*fragBuffers
-	cancel   context.CancelFunc
+	config    HysteriaConfig
+	conn      *net.UDPConn
+	mu        sync.RWMutex
+	sessions  map[string]*HysteriaSession
+	frags     map[string]*fragBuffers
+	cancel    context.CancelFunc
+	closed    bool      // protégé par mu ; true après Close(), pour qu'Addr() ne rende jamais un endpoint pour un moteur arrêté
+	closeOnce sync.Once // garantit un seul appel réel à conn.Close() (voir closeConn)
+}
+
+// closeConn ferme réellement s.conn une seule fois, quel que soit lequel
+// des deux chemins d'arrêt l'appelle en premier : la goroutine interne de
+// Run() qui réagit à ctx.Done() (nécessaire quand l'appelant annule
+// directement le contexte sans passer par Close()), ou Close() lui-même
+// (appelé explicitement par Stop()/Restart()). Sans cette garde, les deux
+// chemins appellent conn.Close() de façon concurrente sur le même fd —
+// l'un des deux reçoit alors "use of closed network connection", ce qui
+// remontait auparavant comme une erreur de Close() (donc de Stop()/
+// Restart()) même quand l'arrêt s'est en réalité bien passé.
+func (s *HysteriaServer) closeConn() error {
+	var err error
+	s.closeOnce.Do(func() {
+		s.mu.Lock()
+		s.closed = true
+		conn := s.conn
+		s.mu.Unlock()
+		if conn != nil {
+			err = conn.Close()
+		}
+	})
+	return err
 }
 
 type fragBuffers struct {
@@ -109,12 +135,20 @@ func readFileH(path string) ([]byte, error) {
 
 func (s *HysteriaServer) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
+	// s.cancel est protégé par s.mu (comme s.sessions) : Run() et Close()
+	// peuvent s'exécuter dans des goroutines différentes (Close() est
+	// typiquement appelé pendant que Run() tourne encore), et rien
+	// d'autre ne garantit un ordre entre l'écriture ici et la lecture
+	// dans Close() — confirmé par -race sur un test qui ferme le serveur
+	// juste après l'avoir démarré.
+	s.mu.Lock()
 	s.cancel = cancel
+	s.mu.Unlock()
 	log.Printf("✔ Hysteria Engine natif démarré sur :%d (obfs: %s, backend: %s)", s.config.Port, s.config.Obfs, s.config.Backend)
 
 	go func() {
 		<-ctx.Done()
-		s.conn.Close()
+		s.closeConn()
 		s.mu.Lock()
 		for _, sess := range s.sessions {
 			if sess.Backend != nil {
@@ -175,11 +209,20 @@ func (s *HysteriaServer) handlePacket(pkt []byte, remoteAddr *net.UDPAddr) {
 	}
 }
 
+// handleHello traite le paquet HELLO initial. Format : [magic:4][sessionID:16].
+// La largeur du sessionID (16 octets) doit être identique dans HELLO, AUTH
+// et DATA : une version antérieure utilisait pkt[4:12] (8 octets) ici et
+// dans handleAuth, mais pkt[4:20] (16 octets) dans handleData — les deux
+// dérivaient donc des clés de map différentes pour ce qui devait être la
+// même session, et handleData ne retrouvait jamais la session créée par
+// handleHello/handleAuth : aucune donnée ne pouvait circuler après
+// authentification.
 func (s *HysteriaServer) handleHello(pkt []byte, remoteAddr *net.UDPAddr) {
-	if len(pkt) < 12 {
+	if len(pkt) < 4+16 {
 		return
 	}
-	sessionID := hex.EncodeToString(pkt[4:12])
+	rawID := append([]byte(nil), pkt[4:20]...)
+	sessionID := hex.EncodeToString(rawID)
 
 	challenge := make([]byte, 32)
 	rand.Read(challenge)
@@ -189,6 +232,7 @@ func (s *HysteriaServer) handleHello(pkt []byte, remoteAddr *net.UDPAddr) {
 	if !exists {
 		sess = &HysteriaSession{
 			ID:        sessionID,
+			rawID:     rawID,
 			ClientIP:  remoteAddr.String(),
 			StartedAt: time.Now(),
 		}
@@ -197,28 +241,29 @@ func (s *HysteriaServer) handleHello(pkt []byte, remoteAddr *net.UDPAddr) {
 	sess.ClientIP = remoteAddr.String()
 	s.mu.Unlock()
 
-	authResp := make([]byte, 8+32)
+	authResp := make([]byte, 4+16+32)
 	binary.BigEndian.PutUint32(authResp[0:4], authMagic)
-	copy(authResp[4:8], []byte(sessionID[:4]))
-	copy(authResp[8:], challenge)
+	copy(authResp[4:20], rawID)
+	copy(authResp[20:], challenge)
 	obfuscate(authResp, []byte(s.config.Obfs))
 	s.conn.WriteToUDP(authResp, remoteAddr)
 }
 
+// handleAuth traite le paquet AUTH. Format : [magic:4][sessionID:16]
+// [clientNonce:16][HMAC(password,clientNonce):32][serverNonce:16] = 84
+// octets minimum. sessionID fait 16 octets, comme dans handleHello et
+// handleData (voir commentaire de handleHello sur l'incohérence corrigée).
 func (s *HysteriaServer) handleAuth(pkt []byte, remoteAddr *net.UDPAddr) {
-	if len(pkt) < 12+64 {
+	const minLen = 4 + 16 + 16 + 32 + 16
+	if len(pkt) < minLen {
 		return
 	}
-	sessionID := hex.EncodeToString(pkt[4:12])
+	rawID := append([]byte(nil), pkt[4:20]...)
+	sessionID := hex.EncodeToString(rawID)
 
-	// Le payload après 12 octets = 16 bytes client nonce + 32 bytes HMAC(password, client_nonce) + 16 bytes server_nonce
-	if len(pkt) < 12+16+32+16 {
-		return
-	}
-
-	clientNonce := pkt[12:28]
-	receivedHMAC := pkt[28:60]
-	_ = pkt[60:76] // serverNonce
+	clientNonce := pkt[20:36]
+	receivedHMAC := pkt[36:68]
+	_ = pkt[68:84] // serverNonce
 
 	// Vérifier HMAC - on itère sur les utilisateurs pour trouver le bon
 	var user *HysteriaUser
@@ -245,6 +290,7 @@ func (s *HysteriaServer) handleAuth(pkt []byte, remoteAddr *net.UDPAddr) {
 	if !exists {
 		sess = &HysteriaSession{
 			ID:        sessionID,
+			rawID:     rawID,
 			ClientIP:  remoteAddr.String(),
 			StartedAt: time.Now(),
 		}
@@ -312,19 +358,23 @@ func (s *HysteriaServer) handleData(pkt []byte, remoteAddr *net.UDPAddr) {
 		return
 	}
 
-	// Vérifier HMAC du payload si présent
+	// Vérifier HMAC du payload si présent. La clé utilisée DOIT être celle
+	// de l'utilisateur authentifié pour CETTE session (sess.User, posé par
+	// handleAuth) — une version antérieure prenait systématiquement le mot
+	// de passe du premier utilisateur activé de la config, quelle que soit
+	// la session, ce qui casse l'intégrité dès qu'il y a plus d'un compte.
 	if len(payload) > 32 {
 		hmacData := payload[len(payload)-32:]
 		data := payload[:len(payload)-32]
-		// Trouver l'utilisateur pour la clé HMAC
+
 		var expectedHMAC []byte
 		for _, u := range s.config.Users {
-			if u.Enabled {
+			if u.Enabled && u.Name == sess.User {
 				expectedHMAC = hmacSHA256([]byte(u.Password), data)
 				break
 			}
 		}
-		if !hmac.Equal(expectedHMAC, hmacData) {
+		if expectedHMAC == nil || !hmac.Equal(expectedHMAC, hmacData) {
 			return
 		}
 		payload = data
@@ -368,6 +418,7 @@ func (s *HysteriaServer) backendLoop(sessionID string, remoteAddr *net.UDPAddr) 
 		return
 	}
 	backend := sess.Backend
+	rawID := sess.rawID
 	s.mu.RUnlock()
 
 	buf := make([]byte, 65535)
@@ -378,11 +429,16 @@ func (s *HysteriaServer) backendLoop(sessionID string, remoteAddr *net.UDPAddr) 
 
 			// Construire packet data : [magic:4][sessionID:16][sequence:4][payload]
 			seq := make([]byte, 4)
-			binary.BigEndian.PutUint32(seq, 0) // simplifié
+			binary.BigEndian.PutUint32(seq, 0) // simplifié : pas de suivi de séquence/réordonnancement
 
 			dataPkt := make([]byte, 4+16+4+len(data))
 			binary.BigEndian.PutUint32(dataPkt[0:4], dataMagic)
-			copy(dataPkt[4:20], []byte(sessionID)[:16])
+			// rawID (16 octets bruts), PAS hex.EncodeToString(sessionID)[:16] —
+			// une version antérieure copiait les 16 premiers CARACTÈRES de la
+			// représentation hexadécimale (donc seulement 8 octets réels de
+			// session, mal encodés en ASCII), ce qui ne pouvait jamais
+			// correspondre au sessionID brut envoyé par le client.
+			copy(dataPkt[4:20], rawID)
 			copy(dataPkt[20:24], seq)
 			copy(dataPkt[24:], data)
 
@@ -390,8 +446,8 @@ func (s *HysteriaServer) backendLoop(sessionID string, remoteAddr *net.UDPAddr) 
 			s.conn.WriteToUDP(dataPkt, remoteAddr)
 
 			s.mu.Lock()
-			if s, ok := s.sessions[sessionID]; ok {
-				s.BytesOut += int64(n)
+			if sess, ok := s.sessions[sessionID]; ok {
+				sess.BytesOut += int64(n)
 			}
 			s.mu.Unlock()
 		}
@@ -400,12 +456,17 @@ func (s *HysteriaServer) backendLoop(sessionID string, remoteAddr *net.UDPAddr) 
 		}
 	}
 
+	// Fermer le backend AVANT de supprimer la session de la map : vérifier
+	// après coup si la session est "toujours dans la map" pour décider de
+	// fermer (comme le faisait une version antérieure) est toujours faux
+	// juste après avoir appelé delete() sur cette même map — le backend
+	// n'était donc jamais fermé ici (fuite de connexion).
 	s.mu.Lock()
 	delete(s.sessions, sessionID)
-	if sess, ok := s.sessions[sessionID]; ok && sess.Backend != nil {
+	s.mu.Unlock()
+	if sess.Backend != nil {
 		sess.Backend.Close()
 	}
-	s.mu.Unlock()
 }
 
 func (s *HysteriaServer) Sessions() []HysteriaSession {
@@ -418,9 +479,26 @@ func (s *HysteriaServer) Sessions() []HysteriaSession {
 	return out
 }
 
+// Addr retourne l'adresse UDP réellement liée par ce serveur, et true tant
+// qu'il n'a pas été arrêté. conn est ouvert de façon synchrone dans
+// NewHysteriaServer (avant même que Run() ne soit lancé en goroutine), donc
+// l'adresse est déjà réelle et disponible dès que le constructeur a réussi.
+func (s *HysteriaServer) Addr() (*net.UDPAddr, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed || s.conn == nil {
+		return nil, false
+	}
+	addr, ok := s.conn.LocalAddr().(*net.UDPAddr)
+	return addr, ok
+}
+
 func (s *HysteriaServer) Close() error {
-	if s.cancel != nil {
-		s.cancel()
+	s.mu.Lock()
+	cancel := s.cancel
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
 	s.mu.Lock()
 	for _, sess := range s.sessions {
@@ -429,10 +507,7 @@ func (s *HysteriaServer) Close() error {
 		}
 	}
 	s.mu.Unlock()
-	if s.conn != nil {
-		return s.conn.Close()
-	}
-	return nil
+	return s.closeConn()
 }
 
 func hmacSHA256(key, data []byte) []byte {

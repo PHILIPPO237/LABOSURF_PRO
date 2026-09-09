@@ -12,6 +12,8 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/user"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -19,14 +21,54 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 )
 
-// applySysProcAttr configure le drop de privilèges vers l'utilisateur labosurf (Linux).
-func applySysProcAttr(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		// Note: Sur Linux, les UID/GID doivent être résolus à l'exécution.
-		// Pour l'instant, on laisse le processus en root et on recommande
-		// de lancer le service via systemd avec User=labosurf.
-		// TODO: Résoudre l'utilisateur 'labosurf' et appliquer Credential{Uid, Gid}.
+// resolveRunAsCredential résout dynamiquement (jamais codé en dur) l'UID et
+// le GID de l'utilisateur système runAsUser via os/user, et renvoie le
+// Credential syscall correspondant ainsi que son répertoire personnel.
+// ok=false si l'utilisateur n'existe pas sur cette machine (ex: machine où
+// labosurf-pro.sh:install_ssh_user n'a pas encore tourné).
+func resolveRunAsCredential(runAsUser string) (cred *syscall.Credential, homeDir string, ok bool) {
+	u, err := user.Lookup(runAsUser)
+	if err != nil {
+		return nil, "", false
 	}
+	uid, err := strconv.ParseUint(u.Uid, 10, 32)
+	if err != nil {
+		return nil, "", false
+	}
+	gid, err := strconv.ParseUint(u.Gid, 10, 32)
+	if err != nil {
+		return nil, "", false
+	}
+	return &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}, u.HomeDir, true
+}
+
+// applySysProcAttr configure le drop de privilèges réel de cmd vers
+// l'utilisateur système runAsUser. Une version antérieure de cette
+// fonction posait un SysProcAttr entièrement vide (aucun Credential) :
+// elle ne droppait donc RIEN, et toute session shell/exec héritait des
+// privilèges du process labosurf-ssh (root en déploiement typique via
+// systemd). Ici, si runAsUser est résolvable, le process fils démarre
+// réellement avec son UID/GID (dropped=true, avec son home directory
+// réel). S'il ne l'est pas (compte système pas encore créé sur cette
+// machine), on continue SANS Credential plutôt que de refuser la session
+// — casser l'accès au tunnel sur une machine mal provisionnée serait pire
+// qu'un avertissement explicite — mais on le journalise bruyamment pour
+// que ce ne soit jamais silencieux.
+func applySysProcAttr(cmd *exec.Cmd, runAsUser string) (homeDir string, dropped bool) {
+	if runAsUser == "" {
+		return "", false
+	}
+	cred, home, ok := resolveRunAsCredential(runAsUser)
+	if !ok {
+		log.Printf(
+			"SSH : utilisateur système %q introuvable — session démarrée SANS drop de privilèges "+
+				"(voir labosurf-pro.sh:install_ssh_user pour provisionner ce compte)",
+			runAsUser,
+		)
+		return "", false
+	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: cred}
+	return home, true
 }
 
 type Session struct {
@@ -39,15 +81,44 @@ type Session struct {
 }
 
 type Server struct {
-	config   SSHConfig
-	listener net.Listener
-	sshConf  *gossh.ServerConfig
-	sessions map[string]*Session
-	mu       sync.RWMutex
-	cancel   context.CancelFunc
+	config    SSHConfig
+	listener  net.Listener
+	sshConf   *gossh.ServerConfig
+	sessions  map[string]*Session
+	mu        sync.RWMutex
+	cancel    context.CancelFunc
+	closed    bool      // protégé par mu ; true après Close(), pour qu'Addr() ne rende jamais un endpoint pour un moteur arrêté
+	closeOnce sync.Once // garantit un seul appel réel à listener.Close() (voir closeListener)
+}
+
+// closeListener ferme réellement s.listener une seule fois, quel que soit
+// lequel des deux chemins d'arrêt l'appelle en premier : la goroutine
+// interne de Run() qui réagit à ctx.Done() (nécessaire quand l'appelant
+// annule directement le contexte sans passer par Close()), ou Close()
+// lui-même (appelé explicitement par Stop()/Restart()). Sans cette garde,
+// les deux chemins appellent listener.Close() de façon concurrente sur le
+// même fd — l'un des deux reçoit "use of closed network connection", ce
+// qui remontait auparavant comme une erreur de Close() (donc de Stop()/
+// Restart()) même quand l'arrêt s'est en réalité bien passé.
+func (s *Server) closeListener() error {
+	var err error
+	s.closeOnce.Do(func() {
+		s.mu.Lock()
+		s.closed = true
+		ln := s.listener
+		s.mu.Unlock()
+		if ln != nil {
+			err = ln.Close()
+		}
+	})
+	return err
 }
 
 func NewServer(cfg SSHConfig) (*Server, error) {
+	if cfg.RunAsUser == "" {
+		cfg.RunAsUser = defaultRunAsUser
+	}
+
 	sshConf := &gossh.ServerConfig{
 		PublicKeyCallback: nil,
 		NoClientAuth:      false,
@@ -63,7 +134,12 @@ func NewServer(cfg SSHConfig) (*Server, error) {
 
 func (s *Server) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
+	// s.cancel protégé par s.mu : même correctif de course que dans
+	// engines/hysteria, engines/slowdns et engines/dnstt (Close() peut
+	// être appelé depuis une autre goroutine juste après le démarrage).
+	s.mu.Lock()
 	s.cancel = cancel
+	s.mu.Unlock()
 
 	hostKey, err := s.loadOrGenerateHostKey()
 	if err != nil {
@@ -115,12 +191,16 @@ func (s *Server) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("écoute TCP %s : %w", addr, err)
 	}
+	// s.listener protégé par s.mu, comme s.cancel : Close() (ou Addr())
+	// peut être appelé depuis une autre goroutine.
+	s.mu.Lock()
 	s.listener = ln
+	s.mu.Unlock()
 	log.Printf("✔ SSH Engine natif démarré sur %s", addr)
 
 	go func() {
 		<-ctx.Done()
-		ln.Close()
+		s.closeListener()
 	}()
 
 	for {
@@ -193,10 +273,24 @@ func (s *Server) handleChannel(ctx context.Context, sshConn *gossh.ServerConn, n
 		case "pty-req":
 			req.Reply(true, nil)
 		case "shell":
-			s.handleShell(ctx, ch, sess, req.WantReply)
+			// Répondre à LA REQUÊTE DE CANAL elle-même (SSH_MSG_CHANNEL_
+			// SUCCESS) — une version antérieure envoyait à la place une
+			// requête "x-accept" inventée sur le canal, qui n'est pas la
+			// réponse SSH attendue. Un vrai client SSH (Session.Start,
+			// utilisé par Run/Output/CombinedOutput) attend cette réponse
+			// avant de continuer : sans elle, l'appel client restait
+			// bloqué indéfiniment — exec/shell via un client SSH réel
+			// n'avait donc jamais fonctionné jusqu'ici.
+			if req.WantReply {
+				req.Reply(true, nil)
+			}
+			s.handleShell(ctx, ch, sess)
 			return
 		case "exec":
-			s.handleExec(ctx, ch, sess, req.Payload, req.WantReply)
+			if req.WantReply {
+				req.Reply(true, nil)
+			}
+			s.handleExec(ctx, ch, sess, req.Payload)
 			return
 		default:
 			if req.WantReply {
@@ -206,27 +300,31 @@ func (s *Server) handleChannel(ctx context.Context, sshConn *gossh.ServerConn, n
 	}
 }
 
-func (s *Server) handleShell(ctx context.Context, ch gossh.Channel, sess *Session, wantReply bool) {
-	if wantReply {
-		_, _ = ch.SendRequest("x-accept", true, nil)
-	}
-
+func (s *Server) handleShell(ctx context.Context, ch gossh.Channel, sess *Session) {
 	shellPath := "/bin/bash"
 	if _, statErr := os.Stat(shellPath); statErr != nil {
 		shellPath = "/bin/sh"
 	}
 
 	cmd := exec.CommandContext(ctx, shellPath, "--login")
+
+	// home : celui du compte système réel si le drop de privilèges a
+	// réussi (le process tourne effectivement sous cet utilisateur, donc
+	// c'est SON HOME qui doit être valide) ; sinon, l'ancienne estimation
+	// par convention (utile pour le confort de session, mais ne reflète
+	// pas forcément un répertoire existant).
+	home, dropped := applySysProcAttr(cmd, s.config.RunAsUser)
+	if !dropped {
+		home = "/home/" + sess.Username
+	}
 	cmd.Env = append(os.Environ(),
-		"HOME=/home/"+sess.Username,
+		"HOME="+home,
 		"USER="+sess.Username,
 		"LOGNAME="+sess.Username,
 		"SHELL="+shellPath,
 		"TERM=xterm-256color",
 		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 	)
-
-	applySysProcAttr(cmd)
 
 	cmd.Stdin = ch
 	cmd.Stdout = ch
@@ -243,11 +341,7 @@ func (s *Server) handleShell(ctx context.Context, ch gossh.Channel, sess *Sessio
 	log.Printf("session SSH %s terminée", sess.Username)
 }
 
-func (s *Server) handleExec(ctx context.Context, ch gossh.Channel, sess *Session, payload []byte, wantReply bool) {
-	if wantReply {
-		_, _ = ch.SendRequest("x-accept", true, nil)
-	}
-
+func (s *Server) handleExec(ctx context.Context, ch gossh.Channel, sess *Session, payload []byte) {
 	var execReq struct {
 		Value string
 	}
@@ -262,20 +356,23 @@ func (s *Server) handleExec(ctx context.Context, ch gossh.Channel, sess *Session
 	}
 
 	cmd := exec.CommandContext(ctx, shellPath, "-c", execReq.Value)
+
+	home, dropped := applySysProcAttr(cmd, s.config.RunAsUser)
+	if !dropped {
+		home = "/home/" + sess.Username
+	}
 	cmd.Env = append(os.Environ(),
-		"HOME=/home/"+sess.Username,
+		"HOME="+home,
 		"USER="+sess.Username,
 		"LOGNAME="+sess.Username,
 		"SHELL="+shellPath,
 		"TERM=xterm-256color",
 		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 	)
-	applySysProcAttr(cmd)
 	cmd.Stdin = ch
 	cmd.Stdout = ch
 	cmd.Stderr = ch.Stderr()
 
-	applySysProcAttr(cmd)
 	runErr := cmd.Run()
 	if runErr != nil {
 		log.Printf("exec SSH %s (%q) : %v", sess.Username, execReq.Value, runErr)
@@ -371,6 +468,28 @@ func (s *Server) writeAuthorizedKeys() error {
 	return os.WriteFile(path, keys, 0o600)
 }
 
+// Addr renvoie l'adresse d'écoute une fois le serveur démarré, nil avant
+// (le listener n'est créé qu'à l'intérieur de Run(), pas de NewServer()).
+// Addr renvoie l'adresse d'écoute une fois le serveur réellement démarré
+// (nil, false avant que le listener ne soit ouvert dans Run(), ou après
+// Close()) — jamais un placeholder.
+func (s *Server) Addr() net.Addr {
+	addr, _ := s.AddrOk()
+	return addr
+}
+
+// AddrOk est la version explicite d'Addr : le bool distingue "pas encore
+// prêt" de "adresse nil" pour un appelant qui a besoin de le savoir
+// (Endpoint()).
+func (s *Server) AddrOk() (net.Addr, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.listener == nil {
+		return nil, false
+	}
+	return s.listener.Addr(), true
+}
+
 func (s *Server) Sessions() []Session {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -382,13 +501,13 @@ func (s *Server) Sessions() []Session {
 }
 
 func (s *Server) Close() error {
-	if s.cancel != nil {
-		s.cancel()
+	s.mu.Lock()
+	cancel := s.cancel
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
-	if s.listener != nil {
-		return s.listener.Close()
-	}
-	return nil
+	return s.closeListener()
 }
 
 func copyConn(dst io.Writer, src io.Reader, counter *int64) {

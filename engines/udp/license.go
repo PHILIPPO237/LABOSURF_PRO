@@ -30,7 +30,6 @@ import (
 // Une fois installé, le serveur tourne librement, sans contrôle.
 //
 
-
 const (
 	productName      = "LABOSURF PRO"
 	activationWindow = 3 * time.Hour
@@ -41,13 +40,13 @@ const (
 )
 
 var (
-	ErrLicenseInvalid   = errors.New("licence invalide")
-	ErrLicenseExpired   = errors.New("fenêtre d'installation dépassée")
-	ErrLicenseRevoked   = errors.New("licence révoquée")
-	ErrLicenseTampered  = errors.New("licence altérée (signature invalide)")
-	ErrNoSigningKey     = errors.New("clé privée de signature absente (réservé à l'administrateur)")
-	ErrNoVerifyKey      = errors.New("clé publique de vérification absente")
-	ErrLicenseFormat    = errors.New("format de licence invalide")
+	ErrLicenseInvalid  = errors.New("licence invalide")
+	ErrLicenseExpired  = errors.New("fenêtre d'installation dépassée")
+	ErrLicenseRevoked  = errors.New("licence révoquée")
+	ErrLicenseTampered = errors.New("licence altérée (signature invalide)")
+	ErrNoSigningKey    = errors.New("clé privée de signature absente (réservé à l'administrateur)")
+	ErrNoVerifyKey     = errors.New("clé publique de vérification absente")
+	ErrLicenseFormat   = errors.New("format de licence invalide")
 )
 
 // LicenseStatus décrit l'état d'une licence.

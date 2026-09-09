@@ -2,10 +2,22 @@
 set -Eeuo pipefail
 
 # ============================================================
-# LABOSURF PRO — Installateur Linux multi-moteurs
+# LABOSURF PRO — Professional Linux multi-engine installer
 # Laboratoire du FreeSurf • PHILIPPO237
-# Moteurs : UDP, Xray, SlowDNS, dnstt, Hysteria, hybrides
+# Engines: UDP, Xray, SlowDNS, dnstt, Hysteria, hybrids
 # ============================================================
+#
+# ARCHITECTURE (see INSTALLER_PROFESSIONAL_UX_REPORT.md for the full
+# rationale): the install is organized into 11 numbered, user-visible
+# steps. License validation is step [2/11] — deliberately BEFORE any
+# dependency installation, network change, or engine download — so an
+# invalid/missing key stops everything before the system is touched
+# beyond creating its own private config directory. The cryptographic
+# verification itself (Ed25519, token format, activation window) is
+# UNCHANGED from the previously audited system
+# (AUDIT_LICENSE_COMPATIBILITY.md, AUDIT_INSTALL_LICENSE_GATE.md) —
+# this file only changes presentation, step ordering, and honesty of
+# the final health check, never the crypto or the license format.
 
 APP_NAME="LABOSURF PRO"
 APP_ID="labosurf"
@@ -17,7 +29,14 @@ PUBKEY_PATH="${CONFIG_DIR}/license_pub.key"
 RECEIPT_DIR="${CONFIG_DIR}"
 GITHUB_REPO="PHILIPPO237/LABOSURF_PRO"
 GITHUB_RELEASE="https://github.com/${GITHUB_REPO}/releases/latest/download"
+TELEGRAM_CONTACT="https://t.me/Philippo237"
 export BIN_PATH CONFIG_DIR GITHUB_REPO GITHUB_RELEASE
+
+# Installer version banner: best-effort from the enclosing git checkout
+# (dev/test use), falls back to "dev" for a standalone downloaded script
+# (the normal curl|bash case) — never a fabricated version number.
+INSTALLER_VERSION="$(git -C "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')"
+[[ -n "$INSTALLER_VERSION" ]] || INSTALLER_VERSION="dev"
 
 # Moteurs autonomes (binaires LABOSURF qui supervisent le vrai moteur tierce).
 # chumo_engines : chaque binaire `labosurf-<name>` télécharge/déploie (SHA-256)
@@ -27,8 +46,11 @@ export BIN_PATH CONFIG_DIR GITHUB_REPO GITHUB_RELEASE
 # donc pas énumérés ici. Binaires de moteurs principaux :
 ENGINE_NAMES="xray slowdns dnstt hysteria udp ssh"
 
-# ── Détection couleur ──────────────────────────────────────
-if [[ -t 1 ]] && command -v tput &>/dev/null && [[ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]]; then
+# ── Détection des capacités du terminal ────────────────────
+IS_TTY_OUT=0
+[[ -t 1 ]] && IS_TTY_OUT=1
+
+if [[ "$IS_TTY_OUT" -eq 1 ]] && command -v tput &>/dev/null && [[ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]]; then
   RESET=$'\033[0m';  BOLD=$'\033[1m';   DIM=$'\033[2m'
   GREEN=$'\033[1;32m'; CYAN=$'\033[1;36m'; BLUE=$'\033[1;34m'
   YELLOW=$'\033[1;33m'; RED=$'\033[1;31m'; WHITE=$'\033[1;37m'
@@ -40,8 +62,36 @@ else
   UNDERLINE=''
 fi
 
+# Détection Unicode : heuristique standard basée sur la locale (utilisée par
+# de nombreux outils CLI — kubectl, oh-my-zsh, etc.). Un terminal qui annonce
+# une locale non-UTF-8 (ou aucune) bascule sur un rendu ASCII pur : bordures,
+# icônes de statut et spinner. Rien de spécifique à LABOSURF n'est deviné —
+# c'est la même variable d'environnement que tout terminal Unix expose déjà.
+UNICODE_OK=0
+case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
+  *UTF-8*|*UTF8*|*utf-8*|*utf8*) UNICODE_OK=1 ;;
+esac
+
+if [[ "$UNICODE_OK" -eq 1 ]]; then
+  ICON_OK='✓'; ICON_FAIL='✗'; ICON_WARN='!'; ICON_PENDING='○'; ICON_INFO='•'
+  SPIN_FRAMES='⠋⠙⠹⠸⠼⠴⠦⠧⠏⠋'
+  BOX_TL='╔'; BOX_TR='╗'; BOX_BL='╚'; BOX_BR='╝'; BOX_H='═'; BOX_V='║'
+  LINE_TL='┌'; LINE_TR='┐'; LINE_BL='└'; LINE_BR='┘'; LINE_H='─'; LINE_V='│'
+  SEP_CHAR='─'
+  KEY_ICON='🔐'
+  BULLET='•'
+else
+  ICON_OK='v'; ICON_FAIL='x'; ICON_WARN='!'; ICON_PENDING='.'; ICON_INFO='*'
+  SPIN_FRAMES='-\|/'
+  BOX_TL='+'; BOX_TR='+'; BOX_BL='+'; BOX_BR='+'; BOX_H='='; BOX_V='|'
+  LINE_TL='+'; LINE_TR='+'; LINE_BL='+'; LINE_BR='+'; LINE_H='-'; LINE_V='|'
+  SEP_CHAR='-'
+  KEY_ICON='[KEY]'
+  BULLET='-'
+fi
+
 # ── Nettoyage ──────────────────────────────────────────────
-cleanup() { tput cnorm 2>/dev/null || true; printf '%b' "$RESET"; }
+cleanup() { [[ "$IS_TTY_OUT" -eq 1 ]] && tput cnorm 2>/dev/null; printf '%b' "$RESET"; return 0; }
 trap cleanup EXIT INT TERM
 
 # ── Utilitaires terminal ───────────────────────────────────
@@ -59,29 +109,45 @@ center() {
   printf '%*s%s\n' "$pad" '' "$text"
 }
 
-# ── Box drawing ────────────────────────────────────────────
+separator() {
+  local w; w="$(term_width)"
+  local width=$(( w > 78 ? 78 : w ))
+  (( width < 10 )) && width=10
+  printf '  %s\n' "$(printf -- "${SEP_CHAR}%.0s" $(seq 1 "$width"))"
+}
+
+# ── Box drawing (bordure simple — utilisée pour les écrans d'info) ──
 box_line() {
-  local content="${1:-}"
-  local width="${2:-}"
-  [[ -z "$width" ]] && width=80
-  local inner=$((width - 4))
-  (( inner < 0 )) && inner=0
-  local pad=$(( (inner - ${#content}) / 2 ))
-  (( pad < 0 )) && pad=0
-  local rpad=$(( inner - pad - ${#content} ))
-  (( rpad < 0 )) && rpad=0
-  printf '│ %*s%s%*s │\n' "$pad" '' "$content" "$rpad" ''
+  local content="${1:-}" width="${2:-80}"
+  local inner=$((width - 4)); (( inner < 0 )) && inner=0
+  local pad=$(( (inner - ${#content}) / 2 )); (( pad < 0 )) && pad=0
+  local rpad=$(( inner - pad - ${#content} )); (( rpad < 0 )) && rpad=0
+  printf '%s %*s%s%*s %s\n' "$LINE_V" "$pad" '' "$content" "$rpad" '' "$LINE_V"
 }
 
 box() {
   local w="${1:-80}"; shift
-  local line
-  line="$(printf '─%.0s' $(seq 1 $((w - 4))))"
-  printf '┌%s┐\n' "$line"
-  for msg in "$@"; do
-    box_line "$msg" "$w"
-  done
-  printf '└%s┘\n' "$line"
+  local line; line="$(printf -- "${LINE_H}%.0s" $(seq 1 $((w - 2))))"
+  printf '%s%s%s\n' "$LINE_TL" "$line" "$LINE_TR"
+  for msg in "$@"; do box_line "$msg" "$w"; done
+  printf '%s%s%s\n' "$LINE_BL" "$line" "$LINE_BR"
+}
+
+# ── Box drawing (bordure double — écrans "titre" : licence, fin) ──
+double_box_line() {
+  local content="${1:-}" width="${2:-80}"
+  local inner=$((width - 4)); (( inner < 0 )) && inner=0
+  local pad=$(( (inner - ${#content}) / 2 )); (( pad < 0 )) && pad=0
+  local rpad=$(( inner - pad - ${#content} )); (( rpad < 0 )) && rpad=0
+  printf '%s %*s%s%*s %s\n' "$BOX_V" "$pad" '' "$content" "$rpad" '' "$BOX_V"
+}
+
+double_box() {
+  local w="${1:-80}"; shift
+  local line; line="$(printf -- "${BOX_H}%.0s" $(seq 1 $((w - 2))))"
+  printf '%s%s%s\n' "$BOX_TL" "$line" "$BOX_TR"
+  for msg in "$@"; do double_box_line "$msg" "$w"; done
+  printf '%s%s%s\n' "$BOX_BL" "$line" "$BOX_BR"
 }
 
 # ── Intro screen ───────────────────────────────────────────
@@ -90,7 +156,7 @@ print_intro() {
   local w
   w="$(term_width)"
   echo
-  if (( w >= 52 )); then
+  if [[ "$UNICODE_OK" -eq 1 ]] && (( w >= 52 )); then
     printf '%b' "$GREEN$BOLD"
     center '██╗      █████╗ ██████╗  ██████╗ ███████╗██╗   ██╗██████╗ ' "$w"
     center '██║     ██╔══██╗██╔══██╗██╔═══██╗██╔════╝██║   ██║██╔══██╗' "$w"
@@ -104,63 +170,110 @@ print_intro() {
     printf '%b' "$RESET"
   fi
   center "${DIM}LABORATOIRE DU FREESURF${RESET}" "$w"
-  center "${DIM}CONÇU PAR PHILIPPO237 • MULTI-MOTEURS${RESET}" "$w"
+  center "${DIM}CONÇU PAR PHILIPPO237 ${BULLET} MULTI-MOTEURS${RESET}" "$w"
+  echo
+  center "${DIM}Installer v${INSTALLER_VERSION} ${BULLET} $(uname -s) $(uname -m)${RESET}" "$w"
   echo
 
   local box_w=50
   (( box_w > w - 2 )) && box_w=$((w - 2))
   printf '%b' "$CYAN"
-  box "$box_w" "INSTALLATION" "Multi-moteurs • VPN" ""
+  box "$box_w" "INSTALLATION" "Multi-engine ${BULLET} VPN"
   printf '%b' "$RESET"
+  echo
+}
+
+# ── Plan d'installation (aperçu statique des 11 étapes) ────
+STEP_LABELS=(
+  "System Check"
+  "License Validation"
+  "Environment Preparation"
+  "Dependencies"
+  "Download Components"
+  "Install Binaries"
+  "Configure LABOSURF PRO"
+  "Install Services"
+  "Start Services"
+  "Health Check"
+  "Finalization"
+)
+
+print_plan() {
+  printf '  %bInstallation plan:%b\n' "$DIM" "$RESET"
+  local i=1 label
+  for label in "${STEP_LABELS[@]}"; do
+    printf '   %b[%s]%b [%d/%d] %s\n' "$DIM" "$ICON_PENDING" "$RESET" "$i" "$STEP_TOTAL" "$label"
+    i=$((i + 1))
+  done
   echo
 }
 
 # ── Indicateurs visuels ────────────────────────────────────
 STEP_CURRENT=0
-STEP_TOTAL=9
+STEP_TOTAL=11
+CURRENT_STEP_LABEL=""
+COMPLETED_STEPS=()
+
+mark_done() { COMPLETED_STEPS+=("$1"); }
 
 step_begin() {
   STEP_CURRENT="$1"
-  local label="$2"
-  printf '\n  %b[%d/%d]%b %b%s%b\n' "$DIM" "$STEP_CURRENT" "$STEP_TOTAL" "$RESET" "$WHITE" "$label" "$RESET"
+  CURRENT_STEP_LABEL="$2"
+  printf '\n  %b[%d/%d]%b %b%s%b\n' "$DIM" "$STEP_CURRENT" "$STEP_TOTAL" "$RESET" "$WHITE" "$CURRENT_STEP_LABEL" "$RESET"
 }
 
 step_spin() {
   local msg="$1"
   printf '  %b[▶]%b %s' "$CYAN" "$RESET" "$msg"
-  tput civis 2>/dev/null || true
+  [[ "$IS_TTY_OUT" -eq 1 ]] && tput civis 2>/dev/null || true
 }
 
 step_ok() {
   local msg="$1"
-  printf '\r  %b[✓]%b %s\n' "$GREEN" "$RESET" "$msg"
-  tput cnorm 2>/dev/null || true
+  printf '\r  %b[%s]%b %s\n' "$GREEN" "$ICON_OK" "$RESET" "$msg"
+  [[ "$IS_TTY_OUT" -eq 1 ]] && tput cnorm 2>/dev/null
+  return 0
 }
 
 step_fail() {
   local msg="$1"
-  printf '\r  %b[✗]%b %s\n' "$RED" "$RESET" "$msg"
-  tput cnorm 2>/dev/null || true
+  printf '\r  %b[%s]%b %s\n' "$RED" "$ICON_FAIL" "$RESET" "$msg"
+  [[ "$IS_TTY_OUT" -eq 1 ]] && tput cnorm 2>/dev/null
+  return 0
 }
 
 step_warn() {
   local msg="$1"
-  printf '  %b[!]%b %s\n' "$YELLOW" "$RESET" "$msg"
+  printf '  %b[%s]%b %s\n' "$YELLOW" "$ICON_WARN" "$RESET" "$msg"
 }
 
-# ── Spinner animé ──────────────────────────────────────────
+# ── Spinner animé (dégradé en simple attente si stdout n'est pas un tty) ──
 spinner() {
-  local pid="$1" msg="$2" frames='⠋⠙⠹⠸⠼⠴⠦⠧⠏⠋' i=0
+  local pid="$1" msg="$2"
+
+  if [[ "$IS_TTY_OUT" -eq 0 ]]; then
+    # Pas de terminal : aucune animation par \r (polluerait un log/pipe).
+    # L'opération continue normalement, juste sans rendu animé.
+    wait "$pid"; local rc=$?
+    if (( rc == 0 )); then
+      printf '  [%s] %s\n' "$ICON_OK" "$msg"
+    else
+      printf '  [%s] %s\n' "$ICON_FAIL" "$msg"
+    fi
+    return "$rc"
+  fi
+
+  local frames="$SPIN_FRAMES" i=0 n=${#SPIN_FRAMES}
   tput civis 2>/dev/null || true
   while kill -0 "$pid" 2>/dev/null; do
-    printf '\r  %b%s%b %s' "$CYAN" "${frames:i++%10:1}" "$RESET" "$msg"
+    printf '\r  %b%s%b %s' "$CYAN" "${frames:i++%n:1}" "$RESET" "$msg"
     sleep 0.08
   done
   wait "$pid"; local rc=$?
   if (( rc == 0 )); then
-    printf '\r  %b[✓]%b %s\n' "$GREEN" "$RESET" "$msg"
+    printf '\r  %b[%s]%b %s\n' "$GREEN" "$ICON_OK" "$RESET" "$msg"
   else
-    printf '\r  %b[✗]%b %s\n' "$RED" "$RESET" "$msg"
+    printf '\r  %b[%s]%b %s\n' "$RED" "$ICON_FAIL" "$RESET" "$msg"
   fi
   tput cnorm 2>/dev/null || true
   return "$rc"
@@ -172,61 +285,103 @@ run_step() {
   local pid=$!
   step_spin "$msg"
   if ! spinner "$pid" "$msg"; then
-    sed -n '1,80p' /tmp/labosurf-install.$$ >&2 || true
-    rm -f /tmp/labosurf-install.$$; die "Échec : $msg"
+    if [[ -s /tmp/labosurf-install.$$ ]]; then
+      printf '\n  %bDiagnostic output:%b\n' "$DIM" "$RESET" >&2
+      sed -n '1,80p' /tmp/labosurf-install.$$ | sed 's/^/    /' >&2 || true
+    fi
+    rm -f /tmp/labosurf-install.$$
+    die "Step failed: $msg"
   fi
   rm -f /tmp/labosurf-install.$$
 }
 
-# ── Barre de progression ───────────────────────────────────
-progress_bar() {
-  local label="$1" current="$2" total="$3"
-  local width=24 filled pct
-  filled=$(( current * width / total ))
-  pct=$(( current * 100 / total ))
-  local bar; bar="$(printf '%*s' "$filled" '' | tr ' ' '█')"
-  local rest; rest="$(printf '%*s' "$((width-filled))" '' | tr ' ' '░')"
-  printf '\r  %b[▶]%b %s %b%s%s%b %d%%' "$CYAN" "$RESET" "$label" "$CYAN" "$bar" "$rest" "$pct"
-}
-
 # ── Messages ───────────────────────────────────────────────
-info() { printf '  %b•%b %s\n' "$CYAN" "$RESET" "$*"; }
-ok()   { printf '  %b✔%b %s\n' "$GREEN" "$RESET" "$*"; }
-warn() { printf '  %b[!]%b %s\n' "$YELLOW" "$RESET" "$*"; }
-die()  { printf '\n  %b[✗]%b %s\n' "$RED" "$RESET" "$*" >&2; exit 1; }
+info() { printf '  %b%s%b %s\n' "$CYAN" "$ICON_INFO" "$RESET" "$*"; }
+ok()   { printf '  %b[%s]%b %s\n' "$GREEN" "$ICON_OK" "$RESET" "$*"; }
+warn() { printf '  %b[%s]%b %s\n' "$YELLOW" "$ICON_WARN" "$RESET" "$*"; }
+
+# die() : écran d'erreur structuré. N'affiche jamais de secret — "$*" est
+# toujours une chaîne humaine fixe dans ce script, jamais un jeton de
+# licence ou une clé (vérifié pour chaque appel de die() dans ce fichier).
+die() {
+  local msg="$*"
+  echo >&2
+  printf '  %b[%s]%b %bInstallation failed%b\n' "$RED" "$ICON_FAIL" "$RESET" "$RED$BOLD" "$RESET" >&2
+  echo >&2
+  if [[ -n "$CURRENT_STEP_LABEL" ]]; then
+    printf '  Step   : [%d/%d] %s\n' "$STEP_CURRENT" "$STEP_TOTAL" "$CURRENT_STEP_LABEL" >&2
+  fi
+  printf '  Reason : %s\n' "$msg" >&2
+  echo >&2
+  exit 1
+}
 
 # ── Écran final ────────────────────────────────────────────
 print_done() {
   local w
   w="$(term_width)"
   echo
-  local box_w=50
+  local box_w=56
   (( box_w > w - 2 )) && box_w=$((w - 2))
   printf '%b' "$GREEN$BOLD"
-  box "$box_w" "INSTALLATION TERMINEE" "LABOSURF PRO pret" ""
+  double_box "$box_w" "LABOSURF PRO INSTALLATION" "COMPLETED"
   printf '%b' "$RESET"
   echo
-  info "Commande principale : ${BOLD}labosurf${RESET}"
-  info "Moteurs autonomes     : ${BOLD}labosurf-<engine>${RESET} (xray, slowdns, dnstt, hysteria, ...)"
-  info "Menu administrateur : ${BOLD}menu${RESET}"
-  info "Service UDP          : ${BOLD}systemctl status labosurf${RESET}"
-  info "Config moteurs       : ${BOLD}/etc/labosurf/engines/<engine>.conf${RESET}"
-  info "Portail HTTP         : ${BOLD}http://<IP>:8080${RESET}"
+
+  local item
+  for item in "${COMPLETED_STEPS[@]}"; do
+    printf '  %b[%s]%b %s\n' "$GREEN" "$ICON_OK" "$RESET" "$item"
+  done
   echo
-  printf '  %bBienvenue dans LABOSURF PRO.%b\n' "$GREEN$BOLD" "$RESET"
+  printf '  %bLABOSURF PRO is ready.%b\n' "$GREEN$BOLD" "$RESET"
+  echo
+
+  info "Main command       : ${BOLD}labosurf${RESET}"
+  info "Standalone engines : ${BOLD}labosurf-<engine>${RESET} (xray, slowdns, dnstt, hysteria, ...)"
+  info "Admin menu         : ${BOLD}menu${RESET}"
+  info "Core service       : ${BOLD}systemctl status labosurf${RESET}"
+  info "Engine configs     : ${BOLD}/etc/labosurf/engines/<engine>.conf${RESET}"
+  info "HTTP portal        : ${BOLD}http://<IP>:8080${RESET}"
   echo
 }
 
-# ── Fonctions d'installation (LOGIQUE INCHANGÉE) ──────────
+# ── Écran de validation de licence ─────────────────────────
+# Purement présentationnel : le contact Telegram n'est qu'une information
+# pour obtenir une clé auprès de l'administrateur. Aucune activation ne
+# passe par Telegram — la seule voie d'autorisation reste la vérification
+# cryptographique Ed25519 faite plus bas dans activate_license().
+print_license_screen() {
+  local w; w="$(term_width)"
+  local box_w=56
+  (( box_w > w - 2 )) && box_w=$((w - 2))
 
-require_root() { [[ "$(id -u)" == 0 ]] || die "Lancez l'installateur avec sudo/root."; }
+  echo
+  printf '%b' "$CYAN$BOLD"
+  double_box "$box_w" "LABOSURF PRO" "LICENSE VALIDATION"
+  printf '%b' "$RESET"
+  echo
+  printf '  %s %bEnter your LABOSURF PRO activation key:%b\n' "$KEY_ICON" "$BOLD" "$RESET"
+  echo
+  separator
+  printf '  %bNo activation key yet?%b\n' "$DIM" "$RESET"
+  printf '  Contact the administrator to obtain your activation key.\n'
+  echo
+  printf '  Telegram:\n'
+  printf '  %b%s%b\n' "$CYAN$UNDERLINE" "$TELEGRAM_CONTACT" "$RESET"
+  separator
+  echo
+}
+
+# ── Fonctions d'installation (LOGIQUE CRYPTO/RÉSEAU INCHANGÉE) ──
+
+require_root() { [[ "$(id -u)" == 0 ]] || die "Run the installer with sudo/root."; }
 
 check_os() {
-  [[ -r /etc/os-release ]] || die "Système Linux non reconnu."
+  [[ -r /etc/os-release ]] || die "Unrecognized Linux system."
   . /etc/os-release
   case "${ID:-}" in
     debian|ubuntu|linuxmint|raspbian) ;;
-    *) warn "Distribution ${ID:-inconnue} non officiellement testée. Installation tentée avec apt." ;;
+    *) warn "Distribution ${ID:-unknown} is not officially tested. Attempting installation with apt." ;;
   esac
 }
 
@@ -254,10 +409,10 @@ setup_network() {
     wan_if="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $2; exit}')"
   fi
   if [[ -z "$wan_if" ]]; then
-    warn "Interface WAN non détectée. Le NAT sera configuré par le serveur au démarrage."
+    warn "WAN interface not detected. NAT will be configured by the server at startup."
     wan_if=""
   else
-    info "Interface WAN détectée : $wan_if"
+    info "WAN interface detected: $wan_if"
   fi
 
   # Ouvrir les ports UDP/TCP nécessaires dans le firewall local.
@@ -296,34 +451,34 @@ download_asset() {
   local suffix asset tmp="${dest}.new" sums="${dest}.sums"
   local expected actual
   mkdir -p "$(dirname "$dest")"
-  suffix="$(arch_suffix)" || { rm -f "$tmp" "$sums"; die "Architecture CPU non supportée : $(uname -m)"; }
+  suffix="$(arch_suffix)" || { rm -f "$tmp" "$sums"; die "Unsupported CPU architecture: $(uname -m)"; }
   asset="${base}-${suffix}"
 
   # 1. Télécharger le manifeste SHA256SUMS complet produit par le workflow.
   curl -fL --retry 3 --connect-timeout 10 --proto '=https' --tlsv1.2 \
     "${GITHUB_RELEASE}/SHA256SUMS" -o "$sums" \
-    || { rm -f "$sums"; die "SHA256SUMS introuvable dans la release. Publiez d'abord une release LABOSURF PRO complète."; }
+    || { rm -f "$sums"; die "SHA256SUMS not found in the release. Publish a complete LABOSURF PRO release first."; }
 
   # 2. Extraire le hash attendu pour cet asset.
   expected="$(awk -v a="$asset" '$2 == a {print $1}' "$sums")"
   [[ -n "$expected" ]] \
-    || { rm -f "$tmp" "$sums"; die "Aucun hash SHA-256 pour ${asset} dans SHA256SUMS — release incohérente."; }
+    || { rm -f "$tmp" "$sums"; die "No SHA-256 hash for ${asset} in SHA256SUMS — inconsistent release."; }
 
   # 3. Télécharger le binaire correspondant.
   curl -fL --retry 3 --connect-timeout 10 --proto '=https' --tlsv1.2 \
     "${GITHUB_RELEASE}/${asset}" -o "$tmp" \
-    || { rm -f "$tmp" "$sums"; die "Asset ${asset} introuvable dans la release."; }
+    || { rm -f "$tmp" "$sums"; die "Asset ${asset} not found in the release."; }
 
   # 4. Vérification d'intégrité : refuse tout binaire altéré ou corrompu.
   actual="$(sha256sum "$tmp" | awk '{print $1}')"
   rm -f "$sums"
   [[ "$actual" == "$expected" ]] \
-    || { rm -f "$tmp"; die "SHA-256 invalide pour ${asset} — installation annulée (fichier altéré ou corrompu)."; }
+    || { rm -f "$tmp"; die "SHA-256 mismatch for ${asset} — installation aborted (corrupted or tampered file)."; }
 
   # 5. Smoke test : le binaire doit réellement s'exécuter sur ce système.
   chmod 0755 "$tmp"
   "$tmp" --help >/dev/null 2>&1 \
-    || { rm -f "$tmp"; die "Le binaire téléchargé ne s'exécute pas sur ce système."; }
+    || { rm -f "$tmp"; die "Downloaded binary does not run on this system."; }
 
   install -m 0755 "$tmp" "$dest"
   rm -f "$tmp"
@@ -333,19 +488,26 @@ fetch_public_key() {
   local url="${GITHUB_RELEASE}/license_pub.key"
   local tmp="${PUBKEY_PATH}.new"
   curl -fL --retry 3 --connect-timeout 10 --proto '=https' --tlsv1.2 "$url" -o "$tmp" \
-    || { rm -f "$tmp"; die "Clé publique introuvable dans la release. Publiez d'abord une release LABOSURF PRO contenant license_pub.key."; }
+    || { rm -f "$tmp"; die "Public key not found in the release. Publish a LABOSURF PRO release containing license_pub.key first."; }
   tr -d '[:space:]' < "$tmp" > "${tmp}.clean"
   mv "${tmp}.clean" "$tmp"
   # Une clé publique Ed25519 valide = exactement 64 caractères hexadécimaux.
   # (la page 404 de GitHub dépasse 64 octets : la taille seule ne suffit pas)
   [[ "$(wc -c < "$tmp")" -eq 64 && "$(cat "$tmp")" =~ ^[0-9a-fA-F]{64}$ ]] \
-    || { rm -f "$tmp"; die "Clé publique de release absente ou invalide (64 caractères hex attendus)."; }
+    || { rm -f "$tmp"; die "Release public key missing or invalid (64 hex characters expected)."; }
   install -m 0644 "$tmp" "$PUBKEY_PATH"
   rm -f "$tmp"
 }
 
+# prepare_dirs crée uniquement les répertoires nécessaires (y compris pour
+# accueillir license_pub.key avant même la validation de licence). La
+# génération du contenu de configuration est séparée dans
+# write_default_config() — voir étape [7/11] Configure LABOSURF PRO.
 prepare_dirs() {
   install -d -m 0755 "$INSTALL_DIR" "$CONFIG_DIR" "${CONFIG_DIR}/engines"
+}
+
+write_default_config() {
   [[ -f "${CONFIG_DIR}/config.json" ]] || cat > "${CONFIG_DIR}/config.json" <<'JSON'
 {
   "listen": ":5667",
@@ -372,27 +534,53 @@ JSON
   chmod 0600 "${CONFIG_DIR}/users_db.json"
 }
 
+# read_license_token lit le jeton saisi par l'opérateur sur le terminal
+# contrôlant (/dev/tty, pas stdin — cohérent avec select_engines() plus bas,
+# nécessaire car ce script peut être exécuté via `curl | bash`, où stdin est
+# déjà consommé par le flux de téléchargement). Isolée dans sa propre
+# fonction uniquement pour permettre à un test de sourcer ce script et de la
+# redéfinir (test_install_license_gate.sh) sans dépendre d'un vrai terminal
+# — le comportement en usage réel (installateur exécuté normalement) est
+# inchangé. Si aucun terminal contrôlant n'existe (environnement totalement
+# non interactif), la lecture échoue proprement et le jeton reste vide —
+# l'installation se bloque alors normalement (échec fermé, jamais ouvert).
+read_license_token() {
+  local t=""
+  IFS= read -r t < /dev/tty 2>/dev/null || true
+  printf '%s' "$t"
+}
+
 activate_license() {
   # La licence ouvre l'ACCÈS AU SCRIPT D'INSTALLATION (1 clé = 1 installation).
   # Vérifiée une seule fois ici : signature Ed25519 + fenêtre de 3h.
   # Le serveur tournera ensuite librement, sans contrôle de licence.
+  #
+  # AUCUN contournement n'existe ici (ni variable d'environnement, ni
+  # fichier, ni option cachée) : toute installation complète nécessite un
+  # jeton qui passe réellement la vérification cryptographique Ed25519
+  # ci-dessous. Un ancien flag LABOSURF_DEV=1 sautait entièrement cette
+  # étape ; il a été retiré (AUDIT_INSTALL_LICENSE_GATE.md) car ce script
+  # est distribué publiquement — un tel flag, visible par quiconque lit le
+  # script, n'offre aucune protection réelle contre un utilisateur final.
+  # Cette fonction ne fait QUE de la présentation par rapport à la version
+  # précédente : la logique cryptographique ci-dessous est strictement
+  # identique (voir AUDIT_INSTALL_LICENSE_GATE.md).
   local token id
-  [[ "${LABOSURF_DEV:-0}" == "1" ]] && { info "Mode DÉVELOPPEMENT (LABOSURF_DEV=1) : licence non requise."; return 0; }
+  print_license_screen
+  printf '  %b1 key = 1 installation %s valid for 3 hours after issuance%b\n' "$DIM" "$BULLET" "$RESET"
   echo
-  printf '  %bLicence LABOSURF PRO%b\n' "$BOLD$CYAN" "$RESET"
-  printf '  %b1 clé = 1 installation • valable 3h après émission%b\n' "$DIM" "$RESET"
+  printf '  %b>%b ' "$CYAN" "$RESET"
+  token="$(read_license_token)"
   echo
-  printf '  Entrez le jeton de licence : '
-  IFS= read -r token < /dev/tty
-  [[ -n "${token//[[:space:]]/}" ]] || die "Aucune licence fournie. Installation annulée."
+  [[ -n "${token//[[:space:]]/}" ]] || die "No activation key provided. Installation cancelled."
   id="$(LABOSURF_LICENSE_PUBKEY="$(cat "$PUBKEY_PATH")" \
     "$BIN_PATH" license verify -token "$token" -print-id)" \
-    || die "Licence refusée (signature invalide ou fenêtre de 3h dépassée)."
-  [[ -n "$id" ]] || die "Licence refusée (identifiant illisible)."
+    || die "Activation key rejected (invalid signature or 3-hour validation window expired)."
+  [[ -n "$id" ]] || die "Activation key rejected (unreadable identifier)."
   local safe_id; safe_id="$(printf '%s' "$id" | tr -c 'A-Za-z0-9_-' '_')"
   [[ -n "$safe_id" ]] || safe_id="unknown"
   if [[ -f "${RECEIPT_DIR}/.install_${safe_id}.receipt" ]]; then
-    die "Cette licence a déjà ouvert une installation (1 clé = 1 installation). Demandez une NOUVELLE licence."
+    die "This license already authorized an installation (1 key = 1 install). Request a NEW license."
   fi
   printf '{"license_id":"%s","installed_at":"%s"}\n' "$id" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     > "${RECEIPT_DIR}/.install_${safe_id}.receipt.tmp"
@@ -400,7 +588,11 @@ activate_license() {
   mv "${RECEIPT_DIR}/.install_${safe_id}.receipt.tmp" "${RECEIPT_DIR}/.install_${safe_id}.receipt"
 }
 
-install_service() {
+# install_service_unit écrit et active (sans démarrer) le service systemd
+# central. Le démarrage réel est fait séparément par start_core_service()
+# — étape [9/11] Start Services — pour distinguer "installé" de "démarré"
+# dans l'expérience utilisateur.
+install_service_unit() {
   cat > "$SERVICE_PATH" <<'UNIT'
 [Unit]
 Description=LABOSURF PRO — UDP Engine
@@ -425,6 +617,9 @@ UNIT
   chmod 0644 "$SERVICE_PATH"
   systemctl daemon-reload
   systemctl enable labosurf.service >/dev/null
+}
+
+start_core_service() {
   systemctl restart labosurf.service
 }
 
@@ -438,9 +633,9 @@ select_engines() {
     return
   fi
 
-  info "Moteurs disponibles : $ENGINE_NAMES"
+  info "Available engines: $ENGINE_NAMES"
   echo
-  printf '  Entrez les moteurs à installer (séparés par des espaces, "all" pour tous) : '
+  printf '  Enter engines to install (space-separated, "all" for all): '
   IFS= read -r SELECTED_ENGINES < /dev/tty
 }
 
@@ -449,7 +644,6 @@ install_engine_binary() {
   local eng="$1"
   local dest="/usr/local/bin/labosurf-${eng}"
   download_asset "labosurf-${eng}" "$dest"
-  ok "Binaire ${eng} installé"
 }
 
 # ── Service systemd par moteur (supervision du vrai binaire tierce) ──
@@ -479,6 +673,10 @@ UNIT
   chmod 0644 "$eng_service"
 }
 
+enable_engine_service() {
+  systemctl enable "labosurf-$1.service" >/dev/null
+}
+
 # Fichier de configuration d'environnement d'un moteur (source du binaire tierce).
 gen_engine_conf() {
   local eng="$1"
@@ -498,8 +696,14 @@ CONF
 install_engine_thirdparty() {
   local eng="$1"
   # Le wrapper télécharge/déploie le vrai moteur, puis on le teste.
+  # Un échec ici n'est qu'un avertissement (le provisionnement tierce peut
+  # être complété plus tard par l'opérateur) — mais il n'est plus silencieux
+  # comme avant : final_check(), à l'étape [10/11] Health Check, vérifie
+  # désormais réellement que le service de CHAQUE moteur sélectionné tourne
+  # (systemctl is-active), et fait échouer l'installation avec un message
+  # clair si ce n'est pas le cas — voir INSTALLER_PROFESSIONAL_UX_REPORT.md.
   if ! /usr/local/bin/labosurf-${eng} install; then
-    warn "Moteur ${eng} : sources tierce non provisionnées (URL/SHA-256). `systemctl --no-pager status labosurf-${eng} 2>/dev/null | head -5 || true`"
+    warn "Engine ${eng}: third-party source not provisioned (URL/SHA-256 missing in ${CONFIG_DIR}/engines/${eng}.conf)."
   fi
 }
 
@@ -520,7 +724,6 @@ install_ssh_user() {
   rm -f "$home/.ssh/authorized_keys"
   ln -sf "${ssh_dir}/authorized_keys" "$home/.ssh/authorized_keys"
   chown -R labosurf:labosurf "$home/.ssh" "$ssh_dir"
-  ok "Utilisateur système labosurf prêt (authorized_keys centralisés)"
 }
 
 install_menu_command() {
@@ -531,80 +734,147 @@ SH
   chmod 0755 /usr/local/bin/menu
 }
 
+# final_check() — Health Check honnête : vérifie le reçu de licence, le
+# service central, ET (nouveau) chaque service moteur réellement
+# sélectionné. Avant cette session, seul le service central était vérifié
+# (limitation déjà documentée : AUDIT_TECHNIQUE_COMPLET_2026-09-09.md §8,
+# "la validation finale ne couvre pas les moteurs sélectionnés" — un moteur
+# tiers mal provisionné pouvait être rapporté comme installé avec succès).
+# Corrigé ici car cette mission exige explicitement de ne jamais afficher
+# un succès pour une opération qui a réellement échoué.
 final_check() {
   "$BIN_PATH" license status -receipt-dir "$RECEIPT_DIR" >/dev/null 2>&1 || \
-    die "Le reçu d'installation est introuvable après installation."
+    die "Install receipt not found after installation."
   systemctl is-enabled labosurf.service >/dev/null
-  systemctl is-active --quiet labosurf.service || { systemctl --no-pager --full status labosurf.service >&2 || true; die "LABOSURF PRO n'a pas démarré correctement."; }
+  systemctl is-active --quiet labosurf.service || {
+    systemctl --no-pager --full status labosurf.service >&2 || true
+    die "LABOSURF PRO core service did not start correctly."
+  }
+
+  local eng
+  for eng in "$@"; do
+    systemctl is-active --quiet "labosurf-${eng}.service" || {
+      systemctl --no-pager --full status "labosurf-${eng}.service" >&2 || true
+      die "Engine service labosurf-${eng} did not start correctly."
+    }
+  done
 }
 
 # ── Point d'entrée ─────────────────────────────────────────
 main() {
   require_root
   print_intro
+  print_plan
 
-  # ── [1/9] Système ──────────────────────────────────────
-  step_begin 1 'Vérification du système'
+  # ── [1/11] System Check ────────────────────────────────
+  step_begin 1 "${STEP_LABELS[0]}"
   check_os
-  step_ok "Système Linux détecté ($(source /etc/os-release && echo "${PRETTY_NAME:-$ID}"))"
+  step_ok "System check passed ($(source /etc/os-release && echo "${PRETTY_NAME:-$ID}"), $(uname -m))"
+  mark_done "System check passed"
 
-  # ── [2/9] Dépendances ──────────────────────────────────
-  step_begin 2 'Préparation des dépendances'
-  run_step 'Installation des composants système...' install_deps
-
-  # ── [3/9] Réseau ───────────────────────────────────────
-  step_begin 3 'Configuration réseau (TUN, NAT, forwarding)'
-  run_step 'Activation du tunnel et des règles réseau...' setup_network
-
-  # ── [4/9] Répertoires ──────────────────────────────────
-  step_begin 4 'Préparation des répertoires'
-  run_step "Création de l'environnement LABOSURF PRO..." prepare_dirs
-
-  # ── [5/9] Binaire gestionnaire ─────────────────────────
-  step_begin 5 'Déploiement du binaire gestionnaire'
-  run_step "Téléchargement du gestionnaire..." download_asset "labosurf" "$BIN_PATH"
-  step_ok "Gestionnaire installé pour $(uname -m)"
-
-  # ── [6/9] Licence ──────────────────────────────────────
-  step_begin 6 'Sécurisation de la licence'
-  run_step 'Installation de la clé publique...' fetch_public_key
-  step_ok 'Clé publique installée'
+  # ── [2/11] License Validation ──────────────────────────
+  # Volontairement TRÈS TÔT : avant toute dépendance, tout changement
+  # réseau, tout téléchargement de moteur. Seuls les répertoires privés de
+  # LABOSURF PRO sont créés (nécessaires pour recevoir license_pub.key et
+  # le binaire vérificateur) et le vérificateur lui-même est téléchargé —
+  # rien d'autre n'est modifié sur le système tant que la clé n'est pas
+  # validée.
+  step_begin 2 "${STEP_LABELS[1]}"
+  run_step 'Preparing environment...' prepare_dirs
+  run_step 'Downloading validator...' download_asset "labosurf" "$BIN_PATH"
+  run_step 'Fetching verification key...' fetch_public_key
   activate_license
-  step_ok 'Installation autorisée (1 clé = 1 installation)'
+  step_ok "License validated"
+  mark_done "License validated"
 
-  # ── [7/9] Moteurs ──────────────────────────────────────
-  step_begin 7 'Installation des moteurs'
+  # ── [3/11] Environment Preparation ─────────────────────
+  step_begin 3 "${STEP_LABELS[2]}"
+  run_step 'Configuring network (TUN, NAT, forwarding)...' setup_network
+  step_ok "Environment ready"
+  mark_done "Environment prepared"
+
+  # ── [4/11] Dependencies ─────────────────────────────────
+  step_begin 4 "${STEP_LABELS[3]}"
+  run_step 'Installing system packages...' install_deps
+  step_ok "Dependencies installed"
+  mark_done "Dependencies installed"
+
+  # ── [5/11] Download Components ─────────────────────────
+  step_begin 5 "${STEP_LABELS[4]}"
   select_engines
-  info "Moteurs sélectionnés : ${SELECTED_ENGINES}"
+  info "Selected engines: ${SELECTED_ENGINES}"
+  local -a VALID_ENGINES=()
+  local eng
   for eng in $SELECTED_ENGINES; do
     case " $ENGINE_NAMES " in
-      *" $eng "*) ;;
-      *) warn "Moteur inconnu ignoré : $eng"; continue ;;
+      *" $eng "*) VALID_ENGINES+=("$eng") ;;
+      *) warn "Unknown engine ignored: $eng" ;;
     esac
-    run_step "Déploiement du binaire moteur ${eng}..." install_engine_binary "$eng"
-    run_step "Installation du service systemd ${eng}..." install_engine_service "$eng"
-    run_step "Génération de la configuration ${eng}..." gen_engine_conf "$eng"
-    if [[ "$eng" == "ssh" ]]; then
-      run_step "Provisionnement de l'utilisateur SSH..." install_ssh_user
-    fi
-    systemctl daemon-reload
-    systemctl enable "labosurf-${eng}.service" >/dev/null
-    install_engine_thirdparty "$eng"
-    systemctl restart "labosurf-${eng}.service"
-    step_ok "Moteur ${eng} installé"
   done
+  for eng in "${VALID_ENGINES[@]}"; do
+    run_step "Downloading ${eng} component..." install_engine_binary "$eng"
+  done
+  step_ok "Components downloaded"
 
-  # ── [8/9] Service ──────────────────────────────────────
-  step_begin 8 'Configuration du service'
-  run_step 'Installation du service systemd...' install_service
-  run_step 'Installation de la commande menu...' install_menu_command
-  step_ok 'Service systemd configuré et démarré'
+  # ── [6/11] Install Binaries ─────────────────────────────
+  step_begin 6 "${STEP_LABELS[5]}"
+  for eng in "${VALID_ENGINES[@]}"; do
+    run_step "Preparing ${eng} service definition..." install_engine_service "$eng"
+    run_step "Generating ${eng} configuration..." gen_engine_conf "$eng"
+    if [[ "$eng" == "ssh" ]]; then
+      run_step "Provisioning SSH system user..." install_ssh_user
+    fi
+  done
+  step_ok "Binaries installed"
+  mark_done "Components installed"
 
-  # ── [9/9] Validation ───────────────────────────────────
-  step_begin 9 'Validation finale'
-  run_step "Vérification de l'installation..." final_check
+  # ── [7/11] Configure LABOSURF PRO ──────────────────────
+  step_begin 7 "${STEP_LABELS[6]}"
+  run_step 'Writing default configuration...' write_default_config
+  run_step 'Installing menu command...' install_menu_command
+  step_ok "Configuration completed"
+  mark_done "Configuration completed"
 
+  # ── [8/11] Install Services ────────────────────────────
+  step_begin 8 "${STEP_LABELS[7]}"
+  run_step 'Installing core systemd service...' install_service_unit
+  if (( ${#VALID_ENGINES[@]} > 0 )); then
+    systemctl daemon-reload
+  fi
+  for eng in "${VALID_ENGINES[@]}"; do
+    run_step "Enabling ${eng} service..." enable_engine_service "$eng"
+    run_step "Provisioning ${eng} third-party binary..." install_engine_thirdparty "$eng"
+  done
+  step_ok "Services installed"
+  mark_done "Services installed"
+
+  # ── [9/11] Start Services ──────────────────────────────
+  step_begin 9 "${STEP_LABELS[8]}"
+  run_step 'Starting core service...' start_core_service
+  for eng in "${VALID_ENGINES[@]}"; do
+    run_step "Starting ${eng} service..." systemctl restart "labosurf-${eng}.service"
+  done
+  step_ok "Services started"
+  mark_done "Services started"
+
+  # ── [10/11] Health Check ───────────────────────────────
+  step_begin 10 "${STEP_LABELS[9]}"
+  run_step "Checking installation health..." final_check "${VALID_ENGINES[@]}"
+  step_ok "Health checks passed"
+  mark_done "Health checks passed"
+
+  # ── [11/11] Finalization ───────────────────────────────
+  step_begin 11 "${STEP_LABELS[10]}"
+  step_ok "Finalizing installation"
   print_done
 }
 
-main "$@"
+# Exécute main() seulement si le script est lancé directement (bash
+# labosurf-pro.sh, ./labosurf-pro.sh, curl | bash) — comportement inchangé
+# pour tout utilisateur réel. Si le script est *sourcé* (source
+# labosurf-pro.sh depuis test_install_license_gate.sh), main() ne se lance
+# pas automatiquement : le test peut alors appeler activate_license
+# directement, en isolation, sans lancer une installation complète.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  main "$@"
+fi

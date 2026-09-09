@@ -7,9 +7,25 @@ import (
 	"strings"
 	"testing"
 
+	"labosurf/engines/xray"
 	"labosurf/internal/srvcfg"
 	"labosurf/internal/store"
 )
+
+// tempRealityKeys génère de vraies clés REALITY dans un répertoire
+// temporaire et pointe le moteur xray dessus (LABOSURF_XRAY_REALITY_DIR),
+// pour que vlessLink() puisse charger une clé publique réelle sans
+// dépendre d'une installation Xray sur la machine de test.
+func tempRealityKeys(t *testing.T) *xray.RealityKeyPair {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("LABOSURF_XRAY_REALITY_DIR", dir)
+	keys, err := xray.EnsureRealityKeys(dir)
+	if err != nil {
+		t.Fatalf("EnsureRealityKeys: %v", err)
+	}
+	return keys
+}
 
 func tempStore(t *testing.T) *store.Store {
 	t.Helper()
@@ -50,6 +66,7 @@ func TestGenerateUDP(t *testing.T) {
 
 func TestGenerateXrayLink(t *testing.T) {
 	s := tempStore(t)
+	keys := tempRealityKeys(t)
 	s.CreateAccount(store.Account{ID: "x1", Username: "bob", Enabled: true})
 	acc, _ := s.GetAccount("x1")
 	s.AddGrant("x1", store.EngineXray, map[string]any{"uuid": "abc-123"})
@@ -61,6 +78,32 @@ func TestGenerateXrayLink(t *testing.T) {
 	}
 	if !strings.HasPrefix(res.ClientLink, "vless://abc-123@vpn.example.com:443") {
 		t.Fatalf("lien xray incorrect : %s", res.ClientLink)
+	}
+	// Non-régression : le lien ne doit plus jamais contenir la clé
+	// placeholder — il doit porter la vraie clé publique REALITY générée
+	// pour ce serveur (format base64url attendu par un client VLESS réel).
+	if strings.Contains(res.ClientLink, "PUBLIC_KEY_PLACEHOLDER") {
+		t.Fatalf("le lien contient encore la clé placeholder : %s", res.ClientLink)
+	}
+	wantPbk := "pbk=" + keys.PublicKeyForVLESS()
+	if !strings.Contains(res.ClientLink, wantPbk) {
+		t.Fatalf("le lien ne contient pas la vraie clé publique REALITY (%s) : %s", wantPbk, res.ClientLink)
+	}
+}
+
+// TestGenerateXrayLinkWithoutRealityKeys vérifie que Generate() échoue
+// explicitement (au lieu de renvoyer un lien avec une clé factice) quand
+// les clés REALITY du serveur n'existent pas encore.
+func TestGenerateXrayLinkWithoutRealityKeys(t *testing.T) {
+	s := tempStore(t)
+	t.Setenv("LABOSURF_XRAY_REALITY_DIR", filepath.Join(t.TempDir(), "absent"))
+	s.CreateAccount(store.Account{ID: "x2", Username: "bob2", Enabled: true})
+	acc, _ := s.GetAccount("x2")
+	s.AddGrant("x2", store.EngineXray, map[string]any{"uuid": "def-456"})
+	acc, _ = s.GetAccount("x2")
+
+	if _, err := Generate(acc, store.EngineXray, prof("vpn.example.com")); err == nil {
+		t.Fatal("attendu une erreur : clés REALITY absentes")
 	}
 }
 

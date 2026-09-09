@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"labosurf/internal/engine"
@@ -37,9 +38,11 @@ type XrayCoreEngine struct {
 	binaryPath string
 	assetDir   string
 	version    string
-	cmd        *exec.Cmd
-	cancel     context.CancelFunc
-	done       chan error
+
+	mu     sync.Mutex // protège cmd/cancel/done contre Start/Stop/Endpoint concurrents
+	cmd    *exec.Cmd
+	cancel context.CancelFunc
+	done   chan error
 }
 
 // XrayCoreConfig holds the Xray-core configuration
@@ -58,13 +61,24 @@ const (
 	xrayCoreAssetDirName = "assets"
 )
 
-// getArchSuffix returns the architecture suffix for Xray-core assets
+// getArchSuffix returns the architecture suffix for Xray-core assets.
+// Doit correspondre EXACTEMENT au nom d'asset publié par XTLS/Xray-core
+// (vérifié pour xrayCoreVersion via les fichiers .dgst officiels de la
+// release) — "linux-arm64" (sans le "-v8a") n'a jamais existé comme asset
+// et faisait échouer le téléchargement (404) sur toute machine arm64.
 func getArchSuffix() string {
-	switch runtime.GOARCH {
+	return archSuffixFor(runtime.GOARCH)
+}
+
+// archSuffixFor est la version paramétrée de getArchSuffix, pour pouvoir
+// tester le mapping pour toutes les architectures cibles depuis un binaire
+// de test qui ne tourne que sur une seule (runtime.GOARCH est fixe).
+func archSuffixFor(goarch string) string {
+	switch goarch {
 	case "amd64":
 		return "linux-64"
 	case "arm64":
-		return "linux-arm64"
+		return "linux-arm64-v8a"
 	default:
 		return "linux-64"
 	}
@@ -75,20 +89,45 @@ func getAssetURL() string {
 	return fmt.Sprintf("%s/%s/Xray-%s.zip", xrayCoreBaseURL, xrayCoreVersion, getArchSuffix())
 }
 
-// getExpectedSHA256 returns the expected SHA256 for the current architecture
-// These should be updated when version changes
+// getExpectedSHA256 returns the expected SHA-256 of the Xray-core release
+// zip for the current architecture, pinned to xrayCoreVersion.
+//
+// Valeurs relevées manuellement depuis les fichiers .dgst signés publiés
+// par XTLS/Xray-core pour la release xrayCoreVersion (champ "SHA2-256" de
+// https://github.com/XTLS/Xray-core/releases/download/<version>/Xray-<arch>.zip.dgst) :
+//   - Xray-linux-64.zip.dgst
+//   - Xray-linux-arm64-v8a.zip.dgst
+//
+// IMPORTANT : si xrayCoreVersion est mis à jour, ces deux valeurs DOIVENT
+// être remises à jour depuis les .dgst de la nouvelle release — sinon
+// downloadAndInstallBinary() rejettera systématiquement le binaire
+// téléchargé (SHA256 mismatch), ce qui est le comportement sûr par défaut
+// (échec explicite) plutôt que d'installer un binaire non vérifié.
 func getExpectedSHA256() string {
-	// These are placeholder - in production these should be verified
-	// For now we'll skip SHA256 verification in tests and use a map
-	arch := getArchSuffix()
-	switch arch {
+	return expectedSHA256For(getArchSuffix())
+}
+
+// expectedSHA256For est la version paramétrée de getExpectedSHA256, pour
+// pouvoir tester les deux checksums connus depuis un seul binaire de test.
+func expectedSHA256For(archSuffix string) string {
+	switch archSuffix {
 	case "linux-64":
-		return "" // Will be filled from config or verified at runtime
-	case "linux-arm64":
-		return ""
+		return "23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae"
+	case "linux-arm64-v8a":
+		return "4d30283ae614e3057f730f67cd088a42be6fdf91f8639d82cb69e48cde80413c"
 	default:
 		return ""
 	}
+}
+
+// RealityDir retourne le répertoire où sont stockées les clés REALITY
+// (générées par Install, utilisées par Configure) — surchargeable via
+// LABOSURF_XRAY_REALITY_DIR comme les autres chemins de ce moteur.
+func RealityDir() string {
+	if p := os.Getenv("LABOSURF_XRAY_REALITY_DIR"); p != "" {
+		return p
+	}
+	return "/etc/labosurf/engines/xray/reality"
 }
 
 // NewXrayCoreEngine creates a new Xray engine using the real Xray-core binary
@@ -124,7 +163,7 @@ func (e *XrayCoreEngine) Install(ctx context.Context, cfg engine.InstallConfig) 
 		filepath.Dir(e.configPath),
 		filepath.Dir(e.binaryPath),
 		e.assetDir,
-		"/etc/labosurf/engines/xray/reality", // For REALITY keys
+		RealityDir(),
 	}
 	for _, dir := range dirs {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -133,7 +172,7 @@ func (e *XrayCoreEngine) Install(ctx context.Context, cfg engine.InstallConfig) 
 	}
 
 	// Generate or load REALITY keys
-	realityDir := "/etc/labosurf/engines/xray/reality"
+	realityDir := RealityDir()
 	realityKeys, err := EnsureRealityKeys(realityDir)
 	if err != nil {
 		return fmt.Errorf("clés REALITY: %w", err)
@@ -301,15 +340,31 @@ func (e *XrayCoreEngine) Configure(ctx context.Context, cfg engine.EngineConfig)
 		return fmt.Errorf("JSON invalide: %w", err)
 	}
 
-	// Inject REALITY public key if present
-	realityDir := "/etc/labosurf/engines/xray/reality"
-	if keys, err := LoadRealityKeys(realityDir); err == nil {
-		if inbounds, ok := config["inbounds"].([]any); ok && len(inbounds) > 0 {
-			if inbound, ok := inbounds[0].(map[string]any); ok {
-				if streamSettings, ok := inbound["streamSettings"].(map[string]any); ok {
-					if realitySettings, ok := streamSettings["realitySettings"].(map[string]any); ok {
-						realitySettings["publicKey"] = keys.PublicKeyHex()
+	// Injecter la vraie clé privée REALITY si la config l'utilise.
+	// Xray-core ne peut pas effectuer le handshake REALITY sans
+	// streamSettings.realitySettings.privateKey : le laisser vide (c'était
+	// le cas auparavant — clientcfg.go génère `"privateKey": ""` avec le
+	// commentaire "will be generated at install time", mais rien ne le
+	// remplissait jamais) produit un serveur qui ne peut jamais valider de
+	// handshake REALITY, sans aucune erreur visible avant l'échec en
+	// production. Le champ "publicKey" injecté précédemment ici n'existe
+	// pas dans le schéma des inbounds Xray-core (seul le client en a
+	// besoin, via le lien VLESS — voir clientcfg.vlessLink) ; il n'était
+	// donc de toute façon d'aucune utilité côté serveur.
+	realityDir := RealityDir()
+	if inbounds, ok := config["inbounds"].([]any); ok && len(inbounds) > 0 {
+		if inbound, ok := inbounds[0].(map[string]any); ok {
+			if streamSettings, ok := inbound["streamSettings"].(map[string]any); ok {
+				if security, _ := streamSettings["security"].(string); security == "reality" {
+					realitySettings, ok := streamSettings["realitySettings"].(map[string]any)
+					if !ok {
+						return fmt.Errorf("configuration Xray : security=reality mais streamSettings.realitySettings absent")
 					}
+					keys, err := LoadRealityKeys(realityDir)
+					if err != nil {
+						return fmt.Errorf("clés REALITY introuvables (%s) — lancez 'install' avant 'configure' : %w", realityDir, err)
+					}
+					realitySettings["privateKey"] = keys.PrivateKeyBase64()
 				}
 			}
 		}
@@ -342,22 +397,26 @@ func (e *XrayCoreEngine) Start(ctx context.Context) error {
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
-	e.cancel = cancel
-	e.done = make(chan error, 1)
+	done := make(chan error, 1)
 
 	cmd := exec.CommandContext(runCtx, e.binaryPath, "run", "-config", e.configPath)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
+	e.mu.Lock()
+	e.cancel = cancel
+	e.done = done
 	e.cmd = cmd
+	e.mu.Unlock()
+
 	go func() {
-		e.done <- cmd.Run()
+		done <- cmd.Run()
 	}()
 
 	// Wait a moment for startup
 	time.Sleep(500 * time.Millisecond)
 	select {
-	case err := <-e.done:
+	case err := <-done:
 		return fmt.Errorf("Xray-core s'est arrêté immédiatement: %w", err)
 	default:
 	}
@@ -371,24 +430,32 @@ func (e *XrayCoreEngine) RunForeground(ctx context.Context) error {
 	if err := e.Start(ctx); err != nil {
 		return err
 	}
-	return <-e.done
+	e.mu.Lock()
+	done := e.done
+	e.mu.Unlock()
+	return <-done
 }
 
 // Stop stops the Xray-core process
 func (e *XrayCoreEngine) Stop() error {
-	if e.cancel != nil {
-		e.cancel()
+	e.mu.Lock()
+	cancel := e.cancel
+	cmd := e.cmd
+	e.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
 	}
-	if e.cmd != nil && e.cmd.Process != nil {
+	if cmd != nil && cmd.Process != nil {
 		// Give it a moment to shutdown gracefully
 		done := make(chan error, 1)
 		go func() {
-			done <- e.cmd.Wait()
+			done <- cmd.Wait()
 		}()
 		select {
 		case <-done:
 		case <-time.After(5 * time.Second):
-			if err := e.cmd.Process.Kill(); err != nil {
+			if err := cmd.Process.Kill(); err != nil {
 				return fmt.Errorf("kill forcé: %w", err)
 			}
 			<-done
@@ -412,14 +479,18 @@ func (e *XrayCoreEngine) Status() engine.EngineStatus {
 		installed = true
 	}
 
+	e.mu.Lock()
+	cmd := e.cmd
+	e.mu.Unlock()
+
 	running := false
 	pid := 0
-	if e.cmd != nil && e.cmd.Process != nil {
+	if cmd != nil && cmd.Process != nil {
 		running = true
-		pid = e.cmd.Process.Pid
+		pid = cmd.Process.Pid
 	}
 
-	return engine.EngineStatus{
+	st := engine.EngineStatus{
 		Installed:  installed,
 		Running:    running,
 		PID:        pid,
@@ -428,59 +499,114 @@ func (e *XrayCoreEngine) Status() engine.EngineStatus {
 		Health:     map[bool]string{true: "healthy", false: "unknown"}[running],
 		ErrorCode:  "",
 	}
+	if running {
+		if ep, ok := e.Endpoint(); ok {
+			st.ListenAddr = ep.Addr
+			if _, portStr, err := net.SplitHostPort(ep.Addr); err == nil {
+				fmt.Sscanf(portStr, "%d", &st.Port)
+			}
+		}
+	}
+	return st
+}
+
+// configuredPort lit inbounds[0].port depuis le fichier de configuration
+// actuellement écrit sur disque (celui que le process Xray-core a
+// réellement chargé au démarrage, écrit par Configure()).
+func (e *XrayCoreEngine) configuredPort() (int, bool) {
+	data, err := os.ReadFile(e.configPath)
+	if err != nil {
+		return 0, false
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return 0, false
+	}
+	inbounds, ok := cfg["inbounds"].([]any)
+	if !ok || len(inbounds) == 0 {
+		return 0, false
+	}
+	inbound, ok := inbounds[0].(map[string]any)
+	if !ok {
+		return 0, false
+	}
+	portVal, ok := inbound["port"].(float64)
+	if !ok || portVal <= 0 {
+		return 0, false
+	}
+	return int(portVal), true
+}
+
+// Endpoint implémente engine.Endpointer. Contrairement aux moteurs Go
+// natifs (hysteria/dnstt/slowdns/ssh), Xray-core est un processus externe
+// qui lit son port d'écoute dans le fichier de config (pas un socket
+// net.Listen géré par ce process Go) : Endpoint() lit ce port déjà écrit
+// par Configure(), puis vérifie par une vraie tentative de connexion TCP
+// que le process écoute réellement dessus avant de déclarer l'endpoint
+// prêt — jamais une déduction optimiste basée sur le seul délai de Start().
+func (e *XrayCoreEngine) Endpoint() (engine.Endpoint, bool) {
+	e.mu.Lock()
+	cmd := e.cmd
+	e.mu.Unlock()
+	if cmd == nil || cmd.Process == nil {
+		return engine.Endpoint{}, false
+	}
+
+	port, ok := e.configuredPort()
+	if !ok {
+		return engine.Endpoint{}, false
+	}
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+
+	conn, err := net.DialTimeout("tcp", addr, 300*time.Millisecond)
+	if err != nil {
+		return engine.Endpoint{}, false
+	}
+	conn.Close()
+	return engine.Endpoint{Network: "tcp", Addr: addr}, true
 }
 
 // HealthCheck verifies the engine is operational
 func (e *XrayCoreEngine) HealthCheck() error {
-	if e.cmd == nil || e.cmd.Process == nil {
+	e.mu.Lock()
+	cmd := e.cmd
+	e.mu.Unlock()
+	if cmd == nil || cmd.Process == nil {
 		return fmt.Errorf("Xray-core non démarré")
 	}
 
-	// Try to connect to the configured port
-	// Parse config to get port
-	if _, err := os.Stat(e.configPath); err != nil {
-		return fmt.Errorf("config non trouvée")
+	port, ok := e.configuredPort()
+	if !ok {
+		// Pas de port configuré (ou config illisible) : rien à sonder.
+		return nil
 	}
-
-	data, err := os.ReadFile(e.configPath)
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
 	if err != nil {
-		return fmt.Errorf("lecture config: %w", err)
+		return fmt.Errorf("port %d non accessible: %w", port, err)
 	}
-
-	var cfg map[string]any
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return fmt.Errorf("config JSON invalide: %w", err)
-	}
-
-	// Try to connect to the first inbound port
-	if inbounds, ok := cfg["inbounds"].([]any); ok && len(inbounds) > 0 {
-		if inbound, ok := inbounds[0].(map[string]any); ok {
-			if portVal, ok := inbound["port"].(float64); ok && portVal > 0 {
-				addr := fmt.Sprintf("127.0.0.1:%d", int(portVal))
-				conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
-				if err != nil {
-					return fmt.Errorf("port %d non accessible: %w", int(portVal), err)
-				}
-				conn.Close()
-			}
-		}
-	}
-
+	conn.Close()
 	return nil
 }
 
 // Logs returns recent logs (from stdout/stderr)
 func (e *XrayCoreEngine) Logs(lines int) ([]string, error) {
-	if e.cmd == nil || e.cmd.Process == nil {
+	e.mu.Lock()
+	cmd := e.cmd
+	e.mu.Unlock()
+	if cmd == nil || cmd.Process == nil {
 		return []string{"Xray-core non démarré"}, nil
 	}
-	return []string{fmt.Sprintf("Xray-core (PID %d) : logs via stdout/stderr systemd", e.cmd.Process.Pid)}, nil
+	return []string{fmt.Sprintf("Xray-core (PID %d) : logs via stdout/stderr systemd", cmd.Process.Pid)}, nil
 }
 
 // Update updates the Xray-core binary
 func (e *XrayCoreEngine) Update() error {
 	// Stop if running
-	if e.cmd != nil && e.cmd.Process != nil {
+	e.mu.Lock()
+	cmd := e.cmd
+	e.mu.Unlock()
+	if cmd != nil && cmd.Process != nil {
 		if err := e.Stop(); err != nil {
 			return err
 		}

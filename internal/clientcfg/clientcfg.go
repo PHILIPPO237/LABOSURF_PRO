@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"labosurf/engines/xray"
 	"labosurf/internal/engine"
 	"labosurf/internal/engineutil"
 	"labosurf/internal/srvcfg"
@@ -69,7 +70,11 @@ func Generate(acc store.Account, engineName string, prof srvcfg.Profile) (Client
 
 	case store.EngineXray:
 		uuid := grantString(acc, store.EngineXray, "uuid")
-		res.ClientLink = vlessLink(uuid, host, port)
+		link, err := vlessLink(uuid, host, port)
+		if err != nil {
+			return ClientResult{}, err
+		}
+		res.ClientLink = link
 		res.ServerConfig = xrayServerConfig(acc, uuid)
 
 	case store.EngineHysteria:
@@ -118,13 +123,23 @@ func grantString(acc store.Account, engineName, key string) string {
 	return ""
 }
 
-// vlessLink compose une URI VLESS (Xray) avec support REALITY.
-func vlessLink(uuid, host string, port int) string {
+// vlessLink compose une URI VLESS (Xray) avec support REALITY, en utilisant
+// la vraie clé publique REALITY du serveur (générée par le moteur xray à
+// l'installation, voir engines/xray.EnsureRealityKeys). Retourne une erreur
+// explicite plutôt qu'un lien avec une clé placeholder si les clés REALITY
+// ne sont pas (encore) disponibles — un lien avec une fausse clé semblerait
+// valide mais ferait systématiquement échouer le handshake REALITY d'un
+// client réel, sans indication claire de la cause.
+func vlessLink(uuid, host string, port int) (string, error) {
 	if uuid == "" {
 		uuid = "UUID-MANQUANT"
 	}
+	keys, err := xray.LoadRealityKeys(xray.RealityDir())
+	if err != nil {
+		return "", fmt.Errorf("clé publique REALITY indisponible (le moteur xray a-t-il été installé ?) : %w", err)
+	}
 	// VLESS URI avec REALITY (xtls-rprx-vision flow)
-	return fmt.Sprintf("vless://%s@%s:%d?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.microsoft.com&fp=chrome&pbk=PUBLIC_KEY_PLACEHOLDER&sid=&type=tcp&headerType=none#LABOSURF", uuid, host, port)
+	return fmt.Sprintf("vless://%s@%s:%d?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.microsoft.com&fp=chrome&pbk=%s&sid=&type=tcp&headerType=none#LABOSURF", uuid, host, port, keys.PublicKeyForVLESS()), nil
 }
 
 func firstDomain(prof srvcfg.Profile) string {
@@ -314,7 +329,11 @@ func hybridClientLink(acc store.Account, engineName, host string, port int, prof
 	switch primary {
 	case store.EngineXray:
 		uuid := grantString(acc, engineName, "uuid")
-		link = vlessLink(uuid, host, port)
+		var err error
+		link, err = vlessLink(uuid, host, port)
+		if err != nil {
+			return "", false
+		}
 	case store.EngineHysteria:
 		pw := grantString(acc, engineName, "password")
 		if pw == "" {

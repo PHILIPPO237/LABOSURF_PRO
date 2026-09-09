@@ -109,10 +109,13 @@ func (s *Server) Close() error {
 
 		s.mu.Unlock()
 
-		// Attendre que tunLoop se termine avant de fermer le TUN
-		s.tunWG.Wait()
-
-		// Fermer le TUN avec le mutex dédié pour éviter les data races
+		// Fermer le TUN AVANT d'attendre tunLoop : tunLoop est
+		// potentiellement bloqué dans un Read() TUN sans deadline
+		// (tun_linux.go n'en pose pas). Fermer le descripteur ici
+		// débloque ce Read() en cours (erreur retournée), et tunLoop
+		// revérifie s.tun == nil à l'itération suivante pour sortir
+		// proprement. L'ordre inverse (attendre tunWG avant de fermer
+		// le TUN) est un deadlock : rien ne débloque alors le Read().
 		s.tunMu.Lock()
 		if s.tun != nil {
 			if err := s.tun.Close(); err != nil {
@@ -121,6 +124,10 @@ func (s *Server) Close() error {
 			s.tun = nil
 		}
 		s.tunMu.Unlock()
+
+		// Attendre que tunLoop se termine réellement (débloqué par la
+		// fermeture ci-dessus, ou déjà terminé via ctx.Done()).
+		s.tunWG.Wait()
 
 		if s.conn != nil {
 			// On ferme la socket mais on ne remet PAS s.conn à nil :
@@ -623,7 +630,13 @@ func (s *Server) handleTunnelPacket(
 	}
 
 	// MODE VPN : écrire le paquet IP brut dans le TUN
-	if s.tun != nil {
+	// Lu sous tunMu (comme tunLoop) : ce chemin tourne dans la goroutine
+	// principale de Run() et peut s'exécuter concurremment à Close(), qui
+	// remet s.tun à nil sous le même mutex.
+	s.tunMu.RLock()
+	tun := s.tun
+	s.tunMu.RUnlock()
+	if tun != nil {
 		// Anti-spoofing : l'adresse IP source du paquet doit correspondre
 		// à l'adresse tunnel allouée à cette session. Sans cette vérification,
 		// un client authentifié pourrait usurper l'IP d'un autre abonné.
@@ -656,7 +669,7 @@ func (s *Server) handleTunnelPacket(
 
 		s.sessions.AddBytesIn(clientID, uint64(len(packet.Payload)))
 
-		if _, err := s.tun.Write(packet.Payload); err != nil {
+		if _, err := tun.Write(packet.Payload); err != nil {
 			log.Printf(
 				"écriture TUN pour %s : %v",
 				clientID,
@@ -788,11 +801,17 @@ func validateBackendAddress(addr string) error {
 	}
 
 	for _, ip := range ips {
-		if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
-			return fmt.Errorf("adresse IP interdite (loopback/link-local/multicast/unspecified): %s", ip)
+		// Le loopback (127.0.0.1) N'EST PAS bloqué : c'est le backend par
+		// défaut documenté du projet (backendAddress() renvoie 127.0.0.1:22
+		// par défaut, sshd tournant sur la même machine que le moteur UDP).
+		// L'adresse backend est fixée par l'opérateur du serveur via la
+		// variable d'environnement LABOSURF_TCP_BACKEND — jamais par le
+		// client distant — donc il n'y a pas de risque SSRF à valider ici :
+		// un client ne peut choisir cette adresse. On rejette seulement les
+		// valeurs qui ne peuvent jamais être un backend TCP valide.
+		if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
+			return fmt.Errorf("adresse IP interdite (link-local/multicast/unspecified): %s", ip)
 		}
-		// Optionnel: bloquer les réseaux privés RFC1918 si backend externe requis
-		// if isPrivateIP(ip) { return fmt.Errorf("adresse privée interdite: %s", ip) }
 	}
 
 	return nil

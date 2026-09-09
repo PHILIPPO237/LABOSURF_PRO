@@ -111,6 +111,32 @@ type EngineConfig struct {
 	JSON []byte
 }
 
+// Endpoint décrit une adresse réseau réellement liée par un moteur démarré.
+// Network vaut "tcp" ou "udp" selon le type de socket réellement ouvert.
+type Endpoint struct {
+	Network string
+	Addr    string
+}
+
+// Endpointer est une interface optionnelle qu'un moteur peut implémenter en
+// plus d'Engine pour exposer l'adresse réseau qu'il écoute réellement une
+// fois démarré — nécessaire au chaînage de moteurs hybrides (un moteur
+// transport doit savoir où relayer le trafic vers le moteur suivant).
+//
+// C'est volontairement une interface séparée d'Engine (à vérifier par
+// assertion de type, `sub.(Endpointer)`), pas une méthode ajoutée à Engine :
+// tous les moteurs n'ont pas nécessairement un endpoint réseau propre à
+// exposer (ex : un futur moteur purement local), et ça évite d'imposer une
+// implémentation à tout type Engine existant ou futur qui n'en a pas besoin.
+type Endpointer interface {
+	// Endpoint retourne l'adresse réellement liée et true si elle est
+	// connue et prête à recevoir des connexions. Retourne (Endpoint{},
+	// false) si le moteur n'est pas démarré, vient d'être arrêté, ou si
+	// son endpoint n'est pas encore déterminable — JAMAIS une adresse
+	// fictive ou un placeholder (ex : jamais "127.0.0.1:0").
+	Endpoint() (Endpoint, bool)
+}
+
 // Engine est le contrat commun de tous les moteurs VPN.
 type Engine interface {
 	// Name retourne l'identifiant unique du moteur ("udp", "xray", ...).

@@ -107,10 +107,24 @@ func buildDNSResponse(query []byte, answerData []byte) []byte {
 	return resp[:pos+10+len(answerData)]
 }
 
-func buildDNSResponseForPayload(sessionID string, payload []byte) []byte {
-	responseData := make([]byte, 16+len(payload))
-	copy(responseData[:16], []byte(sessionID)[:16])
-	copy(responseData[16:], payload)
+// buildDNSResponseForPayload construit la réponse DNS pour un paquet de
+// données retour (backend -> client). Contrairement à une version antérieure
+// de cette fonction, elle exige la VRAIE requête DNS à laquelle elle répond
+// (query) : buildDNSResponse en a besoin pour recopier l'en-tête (ID de
+// transaction) et le nom de domaine interrogé, sans quoi aucune réponse ne
+// peut jamais être construite (buildDNSResponse retourne nil si query fait
+// moins de 12 octets, ce qui était systématiquement le cas quand on lui
+// passait nil).
+//
+// sessionID doit être les 16 octets BRUTS de session (pas la représentation
+// hexadécimale) : les coller tels quels permet au client de retrouver sa
+// session dans la réponse par une simple comparaison d'octets, au lieu
+// d'une chaîne hex tronquée à 16 caractères (donc ne représentant que la
+// moitié des octets réels de session, dans un mauvais encodage).
+func buildDNSResponseForPayload(query []byte, sessionID []byte, payload []byte) []byte {
+	responseData := make([]byte, len(sessionID)+len(payload))
+	copy(responseData, sessionID)
+	copy(responseData[len(sessionID):], payload)
 
-	return buildDNSResponse(nil, responseData)
+	return buildDNSResponse(query, responseData)
 }

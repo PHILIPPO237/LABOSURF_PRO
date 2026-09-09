@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sync"
 
 	"labosurf/internal/engine"
 )
@@ -23,9 +24,11 @@ const (
 
 type SSHEngine struct {
 	configPath string
-	server     *Server
-	cancel     context.CancelFunc
-	done       chan error
+
+	mu     sync.Mutex // protège server/cancel/done contre Start/Stop/Endpoint concurrents
+	server *Server
+	cancel context.CancelFunc
+	done   chan error
 }
 
 func New() (engine.Engine, error) {
@@ -78,12 +81,17 @@ func (e *SSHEngine) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	e.server = srv
 	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+
+	e.mu.Lock()
+	e.server = srv
 	e.cancel = cancel
-	e.done = make(chan error, 1)
+	e.done = done
+	e.mu.Unlock()
+
 	go func() {
-		e.done <- srv.Run(runCtx)
+		done <- srv.Run(runCtx)
 	}()
 	return nil
 }
@@ -92,15 +100,22 @@ func (e *SSHEngine) RunForeground(ctx context.Context) error {
 	if err := e.Start(ctx); err != nil {
 		return err
 	}
-	return <-e.done
+	e.mu.Lock()
+	done := e.done
+	e.mu.Unlock()
+	return <-done
 }
 
 func (e *SSHEngine) Stop() error {
-	if e.cancel != nil {
-		e.cancel()
+	e.mu.Lock()
+	cancel := e.cancel
+	srv := e.server
+	e.mu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
-	if e.server != nil {
-		return e.server.Close()
+	if srv != nil {
+		return srv.Close()
 	}
 	return nil
 }
@@ -113,17 +128,48 @@ func (e *SSHEngine) Restart(ctx context.Context) error {
 }
 
 func (e *SSHEngine) Status() engine.EngineStatus {
-	if e.server == nil {
+	e.mu.Lock()
+	srv := e.server
+	e.mu.Unlock()
+	if srv == nil {
 		return engine.EngineStatus{Installed: true}
 	}
-	return engine.EngineStatus{Installed: true, Running: true}
+	st := engine.EngineStatus{Installed: true, Running: true}
+	if addr, ok := srv.AddrOk(); ok {
+		st.ListenAddr = addr.String()
+	}
+	return st
 }
 
 func (e *SSHEngine) HealthCheck() error {
-	if e.server == nil {
+	e.mu.Lock()
+	srv := e.server
+	e.mu.Unlock()
+	if srv == nil {
 		return fmt.Errorf("serveur SSH non démarré")
 	}
 	return nil
+}
+
+// Endpoint implémente engine.Endpointer : retourne l'adresse TCP réelle
+// liée par le serveur SSH, jamais un placeholder. Contrairement aux
+// moteurs UDP (hysteria/dnstt/slowdns/udp), le listener SSH est ouvert de
+// façon asynchrone à l'intérieur de Run() (goroutine) : juste après
+// Start(), il peut ne pas être encore prêt — l'appelant qui chaîne des
+// moteurs doit réessayer (voir engineutil.waitForEndpoint) plutôt que de
+// supposer une disponibilité immédiate.
+func (e *SSHEngine) Endpoint() (engine.Endpoint, bool) {
+	e.mu.Lock()
+	srv := e.server
+	e.mu.Unlock()
+	if srv == nil {
+		return engine.Endpoint{}, false
+	}
+	addr, ok := srv.AddrOk()
+	if !ok {
+		return engine.Endpoint{}, false
+	}
+	return engine.Endpoint{Network: "tcp", Addr: addr.String()}, true
 }
 
 func (e *SSHEngine) Logs(lines int) ([]string, error) {

@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/binary"
+	"io"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -14,34 +16,60 @@ import (
 // ============================================================
 
 type mockTUN struct {
+	mu      sync.Mutex
 	name    string
-	written [][]byte // paquets écrits dans le TUN (client → serveur)
+	written [][]byte    // paquets écrits dans le TUN (client → serveur)
 	readCh  chan []byte // paquets à lire depuis le TUN (serveur → client)
+	closed  chan struct{}
+	closeOnce sync.Once
 }
 
 func newMockTUN(name string) *mockTUN {
 	return &mockTUN{
 		name:   name,
 		readCh: make(chan []byte, 100),
+		closed: make(chan struct{}),
 	}
 }
 
 func (m *mockTUN) Name() string { return m.name }
 
+// Read bloque jusqu'à un paquet injecté ou jusqu'à Close(), pour refléter
+// le comportement d'un vrai device TUN (Read bloquant débloqué par la
+// fermeture du descripteur) — nécessaire pour tester correctement l'arrêt
+// de tunLoop / Server.Close() sans deadlock.
 func (m *mockTUN) Read(p []byte) (int, error) {
-	pkt := <-m.readCh
-	n := copy(p, pkt)
-	return n, nil
+	select {
+	case pkt := <-m.readCh:
+		n := copy(p, pkt)
+		return n, nil
+	case <-m.closed:
+		return 0, io.EOF
+	}
 }
 
 func (m *mockTUN) Write(p []byte) (int, error) {
 	cp := make([]byte, len(p))
 	copy(cp, p)
+	m.mu.Lock()
 	m.written = append(m.written, cp)
+	m.mu.Unlock()
 	return len(p), nil
 }
 
-func (m *mockTUN) Close() error { return nil }
+func (m *mockTUN) Close() error {
+	m.closeOnce.Do(func() { close(m.closed) })
+	return nil
+}
+
+// Written retourne une copie thread-safe des paquets écrits dans le TUN.
+func (m *mockTUN) Written() [][]byte {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([][]byte, len(m.written))
+	copy(out, m.written)
+	return out
+}
 
 // inject simule un paquet IP sortant du TUN (réponse Internet → client).
 func (m *mockTUN) inject(pkt []byte) {
@@ -181,11 +209,12 @@ func TestTunnelHandshakeAndIPPacket(t *testing.T) {
 	// Attendre que le serveur écrive dans le mock TUN
 	time.Sleep(200 * time.Millisecond)
 
-	if len(mockTUN.written) == 0 {
+	written := mockTUN.Written()
+	if len(written) == 0 {
 		t.Fatal("aucun paquet écrit dans le TUN — le data path ne fonctionne pas")
 	}
 
-	received := mockTUN.written[len(mockTUN.written)-1]
+	received := written[len(written)-1]
 	t.Logf("Paquet reçu dans TUN : %d octets", len(received))
 
 	// Vérifier que c'est un paquet IPv4
@@ -281,7 +310,7 @@ func TestTunnelAntiSpoofing(t *testing.T) {
 	sendTunnelPacket(t, client, legitPkt)
 	time.Sleep(150 * time.Millisecond)
 
-	before := len(mockTUN.written)
+	before := len(mockTUN.Written())
 	if before == 0 {
 		t.Fatal("le paquet légitime aurait dû être écrit dans TUN")
 	}
@@ -292,7 +321,7 @@ func TestTunnelAntiSpoofing(t *testing.T) {
 	sendTunnelPacket(t, client, spoofedPkt)
 	time.Sleep(150 * time.Millisecond)
 
-	after := len(mockTUN.written)
+	after := len(mockTUN.Written())
 	if after != before {
 		t.Fatalf("paquet spoofé accepté : %d écrits dans TUN, attendu %d", after, before)
 	}
@@ -304,7 +333,7 @@ func TestTunnelAntiSpoofing(t *testing.T) {
 	sendTunnelPacket(t, client, notIP)
 	time.Sleep(150 * time.Millisecond)
 
-	final := len(mockTUN.written)
+	final := len(mockTUN.Written())
 	if final != before {
 		t.Fatalf("paquet non-IPv4 accepté : %d écrits dans TUN", final)
 	}
@@ -422,11 +451,82 @@ func TestTunnelMultipleClients(t *testing.T) {
 	sendTunnelPacket(t, c2, pkt2)
 	time.Sleep(100 * time.Millisecond)
 
-	if len(mockTUN.written) < 2 {
-		t.Fatalf("2 paquets attendus dans TUN, obtenu %d", len(mockTUN.written))
+	written := mockTUN.Written()
+	if len(written) < 2 {
+		t.Fatalf("2 paquets attendus dans TUN, obtenu %d", len(written))
 	}
 
-	t.Logf("✓ %d paquets correctement routés through TUN", len(mockTUN.written))
+	t.Logf("✓ %d paquets correctement routés through TUN", len(written))
+}
+
+// TestServerCloseThenRestart est un test de non-régression pour le deadlock
+// de Server.Close() : si tunLoop est bloqué dans Read() sans qu'aucun
+// paquet n'arrive (le cas normal d'un serveur idle), Close() doit tout de
+// même revenir — il ne doit jamais attendre indéfiniment que tunLoop se
+// termine avant de fermer le TUN qui le débloque. Vérifie aussi qu'un
+// second serveur démarre et fonctionne normalement après l'arrêt du
+// premier (cycle Start → Close → Start).
+func TestServerCloseThenRestart(t *testing.T) {
+	newSrv := func() (*Server, context.CancelFunc) {
+		users := map[string]UserConfig{
+			"client1": {Password: "PASS1", Enabled: true},
+		}
+		var config Config
+		config.Listen = "127.0.0.1:0"
+		config.Auth.Mode = "passwords"
+		config.Auth.Users = users
+		config.TUN.Address = "10.77.0.1/24"
+
+		srv, err := NewServer(config, nil)
+		if err != nil {
+			t.Fatalf("NewServer : %v", err)
+		}
+		srv.tun = newMockTUN("test0")
+
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() { _ = srv.Run(ctx) }()
+		return srv, cancel
+	}
+
+	closeWithTimeout := func(srv *Server, cancel context.CancelFunc) {
+		t.Helper()
+		cancel()
+		done := make(chan error, 1)
+		go func() { done <- srv.Close() }()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("Close() a retourné une erreur : %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("Close() n'est jamais revenu (deadlock) — aucun paquet TUN en attente, cas régressé")
+		}
+	}
+
+	// Premier cycle : démarrage, un client s'authentifie, arrêt SANS aucun
+	// paquet TUN en attente — c'est précisément le cas qui provoquait le
+	// deadlock (tunLoop bloqué dans Read() sans rien pour le débloquer).
+	srv1, cancel1 := newSrv()
+	serverAddr1 := srv1.conn.LocalAddr().(*net.UDPAddr)
+	c1, ip1 := connectClient(t, serverAddr1, "client1", "PASS1")
+	c1.Close()
+	if ip1 == "" {
+		t.Fatal("IP tunnel non attribuée au premier cycle")
+	}
+	closeWithTimeout(srv1, cancel1)
+
+	// Second cycle ("restart") : un nouveau serveur doit démarrer et
+	// fonctionner normalement après l'arrêt complet du premier.
+	srv2, cancel2 := newSrv()
+	serverAddr2 := srv2.conn.LocalAddr().(*net.UDPAddr)
+	c2, ip2 := connectClient(t, serverAddr2, "client1", "PASS1")
+	c2.Close()
+	if ip2 == "" {
+		t.Fatal("IP tunnel non attribuée après redémarrage")
+	}
+	closeWithTimeout(srv2, cancel2)
+
+	t.Logf("✓ Close() n'a jamais bloqué ; cycle Start→Close→Start→Close fonctionnel")
 }
 
 // connectHelper connecte un client et retourne l'IP tunnel assignée.

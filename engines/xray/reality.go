@@ -2,7 +2,6 @@ package xray
 
 import (
 	"crypto/rand"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/pem"
@@ -36,16 +35,20 @@ func GenerateRealityKeyPair() (*RealityKeyPair, error) {
 	}, nil
 }
 
-// PrivateKeyPEM returns the private key in PEM format
-func (k *RealityKeyPair) PrivateKeyPEM() ([]byte, error) {
-	privKey, err := x509.MarshalPKCS8PrivateKey(k.PrivateKey)
-	if err != nil {
-		return nil, err
-	}
+// PrivateKeyPEM retourne la clé privée encodée en PEM, pour stockage sur
+// disque. Il ne s'agit PAS d'un encodage x509/PKCS8 : un scalaire X25519
+// brut de 32 octets n'est pas un type que x509.MarshalPKCS8PrivateKey sait
+// sérialiser (il attend ed25519.PrivateKey, *ecdsa.PrivateKey, etc.) —
+// tenter de le faire retournait auparavant systématiquement une erreur
+// ("x509: unknown key type while marshaling PKCS#8: [32]uint8"), ce qui
+// faisait échouer EnsureRealityKeys/SaveRealityKeys à chaque appel et
+// empêchait toute installation du moteur Xray de se terminer. On stocke
+// donc directement les 32 octets bruts dans un bloc PEM dédié.
+func (k *RealityKeyPair) PrivateKeyPEM() []byte {
 	return pem.EncodeToMemory(&pem.Block{
-		Type:  "PRIVATE KEY",
-		Bytes: privKey,
-	}), nil
+		Type:  "X25519 PRIVATE KEY",
+		Bytes: k.PrivateKey[:],
+	})
 }
 
 // PublicKeyHex returns the public key in hex encoding
@@ -58,16 +61,22 @@ func (k *RealityKeyPair) PublicKeyForVLESS() string {
 	return base64.RawURLEncoding.EncodeToString(k.PublicKey[:])
 }
 
+// PrivateKeyBase64 returns the raw 32-byte X25519 private key encoded in
+// base64url (no padding) — the exact format Xray-core expects in
+// streamSettings.realitySettings.privateKey (the same format its own
+// "xray x25519" keygen tool prints). This is NOT the PEM/PKCS8 form
+// returned by PrivateKeyPEM, which is only used for on-disk storage.
+func (k *RealityKeyPair) PrivateKeyBase64() string {
+	return base64.RawURLEncoding.EncodeToString(k.PrivateKey[:])
+}
+
 // SaveRealityKeys saves the REALITY key pair to files
 func SaveRealityKeys(keys *RealityKeyPair, dir string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("création répertoire: %w", err)
 	}
 
-	privPEM, err := keys.PrivateKeyPEM()
-	if err != nil {
-		return err
-	}
+	privPEM := keys.PrivateKeyPEM()
 
 	privPath := filepath.Join(dir, "reality_private.pem")
 	pubPath := filepath.Join(dir, "reality_public.key")
@@ -97,30 +106,12 @@ func LoadRealityKeys(dir string) (*RealityKeyPair, error) {
 	if block == nil {
 		return nil, fmt.Errorf("clé privée PEM invalide")
 	}
-
-	parsedKey, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("parsing clé privée: %w", err)
+	if len(block.Bytes) != 32 {
+		return nil, fmt.Errorf("clé privée REALITY invalide : %d octets (32 attendus)", len(block.Bytes))
 	}
 
-	// Extract the raw 32-byte private key from the parsed key
 	var privKeyArray [32]byte
-	switch pk := parsedKey.(type) {
-	case [32]byte:
-		copy(privKeyArray[:], pk[:])
-	case []byte:
-		copy(privKeyArray[:], pk)
-	default:
-		raw, err := x509.MarshalPKCS8PrivateKey(parsedKey)
-		if err != nil {
-			return nil, fmt.Errorf("sérialisation clé: %w", err)
-		}
-		if len(raw) >= 32 {
-			copy(privKeyArray[:], raw[len(raw)-32:])
-		} else {
-			return nil, fmt.Errorf("clé privée trop courte")
-		}
-	}
+	copy(privKeyArray[:], block.Bytes)
 
 	pubBytes, err := os.ReadFile(pubPath)
 	if err != nil {

@@ -161,9 +161,15 @@ func runEngineMenu() {
 }
 
 // runHybridCreateMenu permet de composer librement un moteur hybride à partir
-// des moteurs principaux (xray, hysteria, udp, slowdns, dnstt, ssh). L'ordre
-// de saisie = ordre des composants. Le guide de compatibilité liste les
+// des moteurs principaux (xray, hysteria, slowdns, dnstt, ssh). L'ordre de
+// saisie = ordre des composants. Le guide de compatibilité liste les
 // avertissements (rôles) sans interdire.
+//
+// "udp" n'apparaît jamais dans la liste ci-dessous : il vit dans
+// engines/udp, un module Go séparé (binaire labosurf-udp autonome, jamais
+// importé par ce binaire cmd/labosurf) — il n'est donc jamais présent dans
+// engine.Names() ici, et ne peut structurellement pas participer à un
+// hybride avec l'architecture actuelle (voir AUDIT_PHASE3_HYBRIDS.md).
 func runHybridCreateMenu() {
 	clearScreen()
 	printCentralHeader()
@@ -350,7 +356,7 @@ func runSingleEngineMenu(e engine.Engine) {
 			menuConfigure(e)
 		case "3":
 			fmt.Println("\n  ▶️ Démarrage du moteur " + name(e) + "...")
-			if err := e.Start(nil); err != nil {
+			if err := e.Start(context.Background()); err != nil {
 				fmt.Println("  " + red("✗ "+err.Error()))
 			} else {
 				fmt.Println("  " + green("✔ Moteur démarré."))
@@ -364,7 +370,7 @@ func runSingleEngineMenu(e engine.Engine) {
 			}
 		case "5":
 			fmt.Println("\n  🔄 Redémarrage du moteur " + name(e) + "...")
-			if err := e.Restart(nil); err != nil {
+			if err := e.Restart(context.Background()); err != nil {
 				fmt.Println("  " + red("✗ "+err.Error()))
 			} else {
 				fmt.Println("  " + green("✔ Moteur redémarré."))
@@ -403,7 +409,7 @@ func runSingleEngineMenu(e engine.Engine) {
 func menuInstall(e engine.Engine) {
 	fmt.Println("\n  📥 Installation du moteur " + name(e) + "...")
 	// Utilise les defaults orientés VPS ; l'arch est détectée automatiquement.
-	if err := e.Install(nil, defaultInstallConfig()); err != nil {
+	if err := e.Install(context.Background(), defaultInstallConfig()); err != nil {
 		fmt.Println("  " + red("✗ "+err.Error()))
 	} else {
 		fmt.Println("  " + green("✔ Moteur installé. Utilisez [3] pour démarrer."))
@@ -423,7 +429,7 @@ func menuConfigure(e engine.Engine) {
 		pauseMenu()
 		return
 	}
-	if err := e.Configure(nil, engine.EngineConfig{JSON: data}); err != nil {
+	if err := e.Configure(context.Background(), engine.EngineConfig{JSON: data}); err != nil {
 		fmt.Println("  " + red("✗ "+err.Error()))
 	} else {
 		fmt.Println("  " + green("✔ Configuration appliquée."))

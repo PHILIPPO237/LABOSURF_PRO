@@ -2,6 +2,7 @@ package dnstt
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/base32"
 	"encoding/binary"
 	"encoding/hex"
@@ -71,11 +72,36 @@ type DNSTTSession struct {
 }
 
 type DNSTTServer struct {
-	config   DNSTTConfig
-	conn     *net.UDPConn
-	sessions map[string]*DNSTTSession
-	mu       sync.RWMutex
-	cancel   context.CancelFunc
+	config    DNSTTConfig
+	conn      *net.UDPConn
+	sessions  map[string]*DNSTTSession
+	mu        sync.RWMutex
+	cancel    context.CancelFunc
+	closed    bool      // protégé par mu ; true après Close(), pour qu'Addr() ne rende jamais un endpoint pour un moteur arrêté
+	closeOnce sync.Once // garantit un seul appel réel à conn.Close() (voir closeConn)
+}
+
+// closeConn ferme réellement s.conn une seule fois, quel que soit lequel
+// des deux chemins d'arrêt l'appelle en premier : la goroutine interne de
+// Run() qui réagit à ctx.Done() (nécessaire quand l'appelant annule
+// directement le contexte sans passer par Close()), ou Close() lui-même
+// (appelé explicitement par Stop()/Restart()). Sans cette garde, les deux
+// chemins appellent conn.Close() de façon concurrente sur le même fd —
+// l'un des deux reçoit "use of closed network connection", ce qui
+// remontait auparavant comme une erreur de Close() (donc de Stop()/
+// Restart()) même quand l'arrêt s'est en réalité bien passé.
+func (s *DNSTTServer) closeConn() error {
+	var err error
+	s.closeOnce.Do(func() {
+		s.mu.Lock()
+		s.closed = true
+		conn := s.conn
+		s.mu.Unlock()
+		if conn != nil {
+			err = conn.Close()
+		}
+	})
+	return err
 }
 
 func NewDNSTTServer(cfg DNSTTConfig) (*DNSTTServer, error) {
@@ -97,12 +123,17 @@ func NewDNSTTServer(cfg DNSTTConfig) (*DNSTTServer, error) {
 
 func (s *DNSTTServer) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
+	// s.cancel protégé par s.mu : Close() peut être appelé depuis une autre
+	// goroutine juste après le démarrage de Run() (même correctif que
+	// engines/hysteria et engines/slowdns, où -race l'a mis en évidence).
+	s.mu.Lock()
 	s.cancel = cancel
+	s.mu.Unlock()
 	log.Printf("✔ DNSTT Engine natif démarré sur :%d (domaine: %s)", s.config.Port, s.config.Domain)
 
 	go func() {
 		<-ctx.Done()
-		s.conn.Close()
+		s.closeConn()
 	}()
 
 	buf := make([]byte, 65535)
@@ -126,7 +157,7 @@ func (s *DNSTTServer) handleQuery(query []byte, remoteAddr *net.UDPAddr) {
 		return
 	}
 
-	subdomain := extractSubdomain(query[12:])
+	subdomain := extractSubdomain(query[12:], s.config.Domain)
 	if subdomain == "" {
 		s.sendNXDOMAIN(query, remoteAddr)
 		return
@@ -150,6 +181,29 @@ func (s *DNSTTServer) handleQuery(query []byte, remoteAddr *net.UDPAddr) {
 	s.mu.Lock()
 	sess, exists := s.sessions[sessionID]
 	if !exists {
+		// Authentification : le premier paquet d'une nouvelle session doit
+		// porter, en tête du payload, une signature ed25519 de sessionID
+		// vérifiable avec la clé publique d'un utilisateur activé. Sans
+		// cela, AUCUNE session n'est créée et le backend n'est jamais
+		// contacté — une version antérieure ignorait entièrement
+		// PublicKey/PrivateKey et acceptait tout paquet correctement
+		// formé, de n'importe quel client non authentifié.
+		if len(payload) < ed25519.SignatureSize {
+			s.mu.Unlock()
+			s.sendNXDOMAIN(query, remoteAddr)
+			return
+		}
+		signature := payload[:ed25519.SignatureSize]
+		innerPayload := payload[ed25519.SignatureSize:]
+
+		user := s.findUserBySessionSignature(sessionID, signature)
+		if user == "" {
+			s.mu.Unlock()
+			log.Printf("DNSTT : authentification refusée pour %s (signature invalide ou clé inconnue)", remoteAddr)
+			s.sendNXDOMAIN(query, remoteAddr)
+			return
+		}
+
 		backend, err := net.Dial("tcp", s.config.Backend)
 		if err != nil {
 			log.Printf("DNSTT : impossible de joindre le backend %s : %v", s.config.Backend, err)
@@ -159,14 +213,15 @@ func (s *DNSTTServer) handleQuery(query []byte, remoteAddr *net.UDPAddr) {
 		}
 		sess = &DNSTTSession{
 			ID:        sessionID,
-			User:      "dnstt-tunnel",
+			User:      user,
 			ClientIP:  remoteAddr.String(),
 			StartedAt: time.Now(),
 			Backend:   backend,
 		}
 		s.sessions[sessionID] = sess
 		go s.backendLoop(sess, remoteAddr)
-		go s.backendToClient(sess, remoteAddr)
+		payload = innerPayload
+		log.Printf("✔ DNSTT : %s authentifié depuis %s, backend connecté", user, remoteAddr)
 	}
 	sess.Sequence = psn
 	sess.BytesIn += int64(len(payload))
@@ -198,10 +253,19 @@ func (s *DNSTTServer) backendLoop(sess *DNSTTSession, remoteAddr *net.UDPAddr) {
 			copy(pkt[headerLen:], chunk)
 			s.mu.Unlock()
 
+			// Paquet "query-shaped" poussé de façon asynchrone au client
+			// (comme pour engines/hysteria, ce n'est pas du vrai DNS
+			// standard consommé par un résolveur — juste une trame au
+			// format DNS-like propriétaire). Le nom DOIT être encodé au
+			// format fil DNS (labels préfixés par leur longueur) : une
+			// version antérieure concaténait directement la chaîne
+			// "sous-domaine.domaine." avec ses points ASCII littéraux,
+			// ce qui ne peut être interprété comme un QNAME par aucun
+			// analyseur — les données poussées au client n'étaient donc
+			// jamais exploitables.
 			subdomain := encodeSubdomainB32(pkt)
 			fullQuery := []byte{0x00, 0x00, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
-			fullQuery = append(fullQuery, []byte(subdomain+"."+s.config.Domain+".")...)
-			fullQuery = append(fullQuery, 0x00)
+			fullQuery = append(fullQuery, encodeDNSName(subdomain+"."+s.config.Domain)...)
 			tail := []byte{0x00, 0x10, 0x00, 0x01}
 			fullQuery = append(fullQuery, tail...)
 
@@ -221,7 +285,28 @@ func (s *DNSTTServer) backendLoop(sess *DNSTTSession, remoteAddr *net.UDPAddr) {
 	}
 }
 
-func (s *DNSTTServer) backendToClient(sess *DNSTTSession, remoteAddr *net.UDPAddr) {
+// findUserBySessionSignature retourne le nom de l'utilisateur activé dont
+// la clé publique valide la signature (ed25519) du sessionID — ou "" si
+// aucune ne correspond. Contrairement à un mécanisme qui accepterait "le
+// premier utilisateur valide" indépendamment de la signature reçue (un
+// anti-pattern déjà identifié ailleurs dans ce dépôt, pour SlowDNS), la
+// signature est réellement vérifiée contre CHAQUE clé publique activée :
+// seul le détenteur de la clé privée correspondante peut passer.
+func (s *DNSTTServer) findUserBySessionSignature(sessionID string, signature []byte) string {
+	msg := []byte(sessionID)
+	for _, u := range s.config.Users {
+		if !u.Enabled {
+			continue
+		}
+		pubKeyBytes, err := hex.DecodeString(u.PublicKey)
+		if err != nil || len(pubKeyBytes) != ed25519.PublicKeySize {
+			continue
+		}
+		if ed25519.Verify(ed25519.PublicKey(pubKeyBytes), msg, signature) {
+			return u.User
+		}
+	}
+	return ""
 }
 
 func (s *DNSTTServer) sendDNSResponse(query, answerData []byte, remoteAddr *net.UDPAddr) {
@@ -255,14 +340,44 @@ func (s *DNSTTServer) Sessions() []DNSTTSession {
 	return out
 }
 
+// Addr retourne l'adresse UDP réellement liée par ce serveur, et true tant
+// qu'il n'a pas été arrêté. conn est ouvert de façon synchrone dans
+// NewDNSTTServer (avant même que Run() ne soit lancé en goroutine), donc
+// l'adresse est déjà réelle et disponible dès que le constructeur a réussi.
+func (s *DNSTTServer) Addr() (*net.UDPAddr, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed || s.conn == nil {
+		return nil, false
+	}
+	addr, ok := s.conn.LocalAddr().(*net.UDPAddr)
+	return addr, ok
+}
+
 func (s *DNSTTServer) Close() error {
-	if s.cancel != nil {
-		s.cancel()
+	s.mu.Lock()
+	cancel := s.cancel
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
-	if s.conn != nil {
-		return s.conn.Close()
+	return s.closeConn()
+}
+
+// encodeDNSName encode un nom pointillé ("a.b.c") au format fil DNS :
+// une suite de labels préfixés par leur longueur, terminée par un octet
+// nul. Chaque label doit faire au plus 63 octets (respecté ici car
+// encodeSubdomainB32 découpe déjà ses labels de données à 63 caractères).
+func encodeDNSName(name string) []byte {
+	var out []byte
+	for _, label := range strings.Split(name, ".") {
+		if label == "" {
+			continue
+		}
+		out = append(out, byte(len(label)))
+		out = append(out, []byte(label)...)
 	}
-	return nil
+	return append(out, 0x00)
 }
 
 func encodeSubdomainB32(data []byte) string {
@@ -284,7 +399,14 @@ func decodeSubdomainB32(subdomain string) ([]byte, error) {
 	return base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(cleaned)
 }
 
-func extractSubdomain(qname []byte) string {
+// extractSubdomain reconstruit la chaîne base32 complète à partir du QNAME,
+// en retirant les labels correspondant au domaine configuré. Une version
+// antérieure ne retournait que parts[0] (le premier label DNS, 63
+// caractères max) : dès que le payload dépasse ~39 octets (courant une
+// fois la signature ed25519 d'authentification de 64 octets ajoutée), les
+// données encodées débordent sur plusieurs labels et étaient tronquées
+// silencieusement. Voir le même correctif dans engines/slowdns.
+func extractSubdomain(qname []byte, domain string) string {
 	var parts []string
 	pos := 0
 	for pos < len(qname) {
@@ -299,8 +421,29 @@ func extractSubdomain(qname []byte) string {
 		parts = append(parts, string(qname[pos:pos+length]))
 		pos += length
 	}
-	if len(parts) > 0 {
-		return parts[0]
+	if len(parts) == 0 {
+		return ""
+	}
+
+	dataLabels := parts
+	if domain != "" {
+		suffix := strings.Split(strings.Trim(domain, "."), ".")
+		if len(parts) > len(suffix) {
+			matches := true
+			offset := len(parts) - len(suffix)
+			for i, want := range suffix {
+				if !strings.EqualFold(parts[offset+i], want) {
+					matches = false
+					break
+				}
+			}
+			if matches {
+				dataLabels = parts[:offset]
+			}
+		}
+	}
+	if len(dataLabels) > 0 {
+		return strings.Join(dataLabels, ".")
 	}
 	return ""
 }
@@ -350,6 +493,3 @@ func buildDNSResponse(query []byte, answerData []byte, typeCode uint16) []byte {
 	return response
 }
 
-func init() {
-	_ = hex.EncodeToString
-}

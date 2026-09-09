@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sync"
 
 	"labosurf/internal/engine"
 )
@@ -22,9 +23,11 @@ const (
 
 type DNSTTEngineWrapper struct {
 	configPath string
-	server     *DNSTTServer
-	cancel     context.CancelFunc
-	done       chan error
+
+	mu     sync.Mutex // protège server/cancel/done contre Start/Stop/Endpoint concurrents
+	server *DNSTTServer
+	cancel context.CancelFunc
+	done   chan error
 }
 
 func New() (engine.Engine, error) {
@@ -72,12 +75,17 @@ func (e *DNSTTEngineWrapper) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	e.server = srv
 	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+
+	e.mu.Lock()
+	e.server = srv
 	e.cancel = cancel
-	e.done = make(chan error, 1)
+	e.done = done
+	e.mu.Unlock()
+
 	go func() {
-		e.done <- srv.Run(runCtx)
+		done <- srv.Run(runCtx)
 	}()
 	return nil
 }
@@ -86,15 +94,22 @@ func (e *DNSTTEngineWrapper) RunForeground(ctx context.Context) error {
 	if err := e.Start(ctx); err != nil {
 		return err
 	}
-	return <-e.done
+	e.mu.Lock()
+	done := e.done
+	e.mu.Unlock()
+	return <-done
 }
 
 func (e *DNSTTEngineWrapper) Stop() error {
-	if e.cancel != nil {
-		e.cancel()
+	e.mu.Lock()
+	cancel := e.cancel
+	srv := e.server
+	e.mu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
-	if e.server != nil {
-		return e.server.Close()
+	if srv != nil {
+		return srv.Close()
 	}
 	return nil
 }
@@ -107,17 +122,44 @@ func (e *DNSTTEngineWrapper) Restart(ctx context.Context) error {
 }
 
 func (e *DNSTTEngineWrapper) Status() engine.EngineStatus {
-	if e.server == nil {
+	e.mu.Lock()
+	srv := e.server
+	e.mu.Unlock()
+	if srv == nil {
 		return engine.EngineStatus{Installed: true}
 	}
-	return engine.EngineStatus{Installed: true, Running: true}
+	st := engine.EngineStatus{Installed: true, Running: true}
+	if addr, ok := srv.Addr(); ok {
+		st.ListenAddr = addr.String()
+		st.Port = addr.Port
+	}
+	return st
 }
 
 func (e *DNSTTEngineWrapper) HealthCheck() error {
-	if e.server == nil {
+	e.mu.Lock()
+	srv := e.server
+	e.mu.Unlock()
+	if srv == nil {
 		return fmt.Errorf("serveur dnstt non démarré")
 	}
 	return nil
+}
+
+// Endpoint implémente engine.Endpointer : retourne l'adresse UDP réelle
+// liée par le serveur dnstt, jamais un placeholder.
+func (e *DNSTTEngineWrapper) Endpoint() (engine.Endpoint, bool) {
+	e.mu.Lock()
+	srv := e.server
+	e.mu.Unlock()
+	if srv == nil {
+		return engine.Endpoint{}, false
+	}
+	addr, ok := srv.Addr()
+	if !ok {
+		return engine.Endpoint{}, false
+	}
+	return engine.Endpoint{Network: "udp", Addr: addr.String()}, true
 }
 
 func (e *DNSTTEngineWrapper) Logs(lines int) ([]string, error) {

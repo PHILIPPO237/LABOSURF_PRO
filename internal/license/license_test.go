@@ -148,6 +148,25 @@ func TestVerifyToken_Malformed(t *testing.T) {
 	}
 }
 
+// TEST 8 (mission) : signature vide/manquante -> refusée. TestVerifyToken_Malformed
+// couvre déjà ce cas indirectement ("payload.") ; ce test l'isole explicitement
+// en signant un payload légitime puis en tronquant uniquement la signature.
+func TestVerifyToken_EmptySignature(t *testing.T) {
+	useTempDataDir(t)
+	priv, pub := makeKeyPair(t)
+	testVerifyKey = pub
+
+	token := makeToken(t, validData("T-EMPTY-SIG", 2*time.Hour), priv)
+	parts := strings.Split(token, ".")
+	noSig := parts[0] + "."
+
+	if _, err := VerifyToken(noSig); err == nil {
+		t.Fatal("signature vide acceptée")
+	} else if !strings.Contains(err.Error(), "signature") {
+		t.Fatalf("erreur signature attendue, obtenu : %v", err)
+	}
+}
+
 func TestActivate_Valid(t *testing.T) {
 	dir := useTempDataDir(t)
 	priv, pub := makeKeyPair(t)

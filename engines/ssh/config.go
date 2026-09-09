@@ -12,12 +12,20 @@ import (
 const (
 	defaultSSHPort = 22
 	defaultSSHDir  = "/etc/labosurf/ssh"
+
+	// defaultRunAsUser est l'utilisateur système non-root vers lequel les
+	// sessions shell/exec doivent dropper leurs privilèges. Doit
+	// correspondre au compte créé par labosurf-pro.sh (install_ssh_user,
+	// useradd labosurf) — surchargeable via SSHConfig.RunAsUser si un
+	// déploiement utilise un autre nom de compte.
+	defaultRunAsUser = "labosurf"
 )
 
 type SSHConfig struct {
-	Port  int        `json:"port"`
-	Users []SSHUser  `json:"users"`
-	Dir   string     `json:"dir"`
+	Port      int       `json:"port"`
+	Users     []SSHUser `json:"users"`
+	Dir       string    `json:"dir"`
+	RunAsUser string    `json:"run_as_user,omitempty"`
 }
 
 type SSHUser struct {
@@ -41,6 +49,9 @@ func loadSSHConfig(path string) (SSHConfig, error) {
 	}
 	if cfg.Dir == "" {
 		cfg.Dir = defaultSSHDir
+	}
+	if cfg.RunAsUser == "" {
+		cfg.RunAsUser = defaultRunAsUser
 	}
 	return cfg, nil
 }
