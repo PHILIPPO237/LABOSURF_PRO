@@ -56,3 +56,10 @@ engines/udp/licenses.json
 
 # Binaire racine local (ne jamais committer)
 /labosurf
+
+# Rapports d'audit / rapports temporaires — ne pas déployer
+AUDIT_*.md
+RAPPORT_*.md
+*_REPORT.md
+FILES_TO_DELETE.md
+UNUSED_FILES.md
