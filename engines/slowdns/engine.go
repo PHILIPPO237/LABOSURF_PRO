@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"labosurf/internal/engine"
@@ -55,7 +56,7 @@ func (e *SlowDNSEngineWrapper) Configure(ctx context.Context, cfg engine.EngineC
 	if len(cfg.JSON) == 0 {
 		return fmt.Errorf("configuration SlowDNS vide")
 	}
-	dir := "/etc/labosurf/engines/slowdns"
+	dir := filepath.Dir(e.configPath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}

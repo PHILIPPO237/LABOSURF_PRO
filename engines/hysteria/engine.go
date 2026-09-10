@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"labosurf/internal/engine"
@@ -118,7 +119,7 @@ func (e *HysteriaEngineWrapper) Configure(ctx context.Context, cfg engine.Engine
 		return err
 	}
 
-	dir := "/etc/labosurf/engines/hysteria"
+	dir := filepath.Dir(e.configPath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
