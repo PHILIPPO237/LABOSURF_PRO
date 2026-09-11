@@ -2,7 +2,7 @@
 
 **Laboratoire du FreeSurf — PHILIPPO237**
 
-LABOSURF PRO est une plateforme multi-moteurs pour services VPN et tunnels réseau, déployée sur un VPS Linux via un installateur shell, puis administrée en CLI par SSH — depuis un PC, ou depuis Android avec un client SSH comme **Termius** (le cas d'usage le plus courant : un VPS + un téléphone Android pour l'administrer). **Termux** (environnement Linux local sur Android) n'est nécessaire que pour un usage secondaire et optionnel — voir [Android](#android).
+LABOSURF PRO est une plateforme multi-moteurs pour services VPN et tunnels réseau, déployée sur un VPS Linux via un installateur shell, puis administrée en CLI par SSH — depuis un PC, ou depuis Android avec un client SSH comme **Termius**.
 
 Dernière version stable : **v1.3.0** — <https://github.com/PHILIPPO237/LABOSURF_PRO/releases/latest>
 
@@ -17,7 +17,7 @@ Dernière version stable : **v1.3.0** — <https://github.com/PHILIPPO237/LABOSU
 | **Hysteria** (maison) | trame UDP propriétaire (magic bytes) | 8443/UDP | VPN | Réimplémentation Go maison — **PAS le protocole Hysteria2 officiel** (pas de QUIC réel, pas d'obfuscation Salamander) |
 | **TUIC** | TUIC v5 | 443/UDP | VPN | Binaire officiel `tuic-server` (QUIC/TLS, auth UUID + mot de passe) — pas une réimplémentation |
 | **Hysteria2** (officiel) | Hysteria2 (TLS-over-QUIC) | 443/UDP | VPN | Binaire officiel `hysteria` (apernet/hysteria, obfuscation Salamander) — distinct du moteur "Hysteria" maison ci-dessus. Collision de port 443/UDP avec TUIC assumée (voir [Firewall](#firewall-ce-qui-est-automatique-et-ce-qui-ne-lest-pas)) |
-| **WireGuard** | WireGuard (Noise) | 51820/UDP | VPN | Pilote les outils **système** `wg`/`wg-quick` (module noyau) — **aucun binaire téléchargé**, nécessite `wireguard-tools` installé manuellement sur le VPS (non couvert par l'installateur automatique aujourd'hui). Pas de support Android/Termux |
+| **WireGuard** | WireGuard (Noise) | 51820/UDP | VPN | Pilote les outils **système** `wg`/`wg-quick` (module noyau) — **aucun binaire téléchargé**, nécessite `wireguard-tools` installé manuellement sur le VPS (non couvert par l'installateur automatique aujourd'hui). Pas de support Android |
 | **SlowDNS** | DNS Tunnel | 53/UDP | Transport | Tunnel DNS sur UDP (auth Ed25519, backend TCP) |
 | **DNSTT** | DNS Tunnel | 53/UDP | Transport | Tunnel DNS quasi-indétectable (sessions, fragmentation) |
 | **SSH** | SSH | 22/TCP | Accès | Serveur SSH natif (auth Ed25519, shell non-root) |
@@ -64,9 +64,7 @@ ssh root@<votre-vps>
 menu          # ou : labosurf
 ```
 
-⚠️ **Termux ≠ Termius**, malgré la ressemblance du nom : Termius est un client SSH pur (se connecte à un serveur distant, c'est l'outil pertinent ci-dessus) ; Termux est un environnement Linux local sur Android (exécution de vrais binaires, `pkg install`). Un utilisateur normal n'a besoin ni de Termux, ni de rien installer localement.
-
-Termux ne sert qu'à un usage interne à l'administrateur du projet (génération des jetons d'activation via un outil privé séparé) — voir [Installation Android / Termux](#installation-android-termux) pour ce détail, hors du périmètre des utilisateurs finaux.
+Aucune installation locale sur le téléphone n'est nécessaire.
 
 ### WSL (Windows Subsystem for Linux)
 
@@ -116,30 +114,6 @@ L'installateur ouvre automatiquement, via `iptables` (ou `nft` en secours si `ip
 ⚠️ **TUIC et Hysteria2 partagent le même port par défaut (443/UDP)** — les deux ne peuvent pas être actifs simultanément sans reconfigurer le port de l'un des deux (profil serveur, menu central). Ce n'est pas un bug : c'est la convention officielle des deux protocoles, documentée dans `ETUDE_PROTOCOLes_COMPATIBLES.md`.
 
 ⚠️ **WireGuard nécessite le paquet système `wireguard-tools`** (`wg`/`wg-quick`) et le module noyau WireGuard (mainline depuis Linux 5.6). **L'installateur automatique ne l'installe pas aujourd'hui** — si vous sélectionnez le moteur WireGuard, installez-le manuellement avant de lancer `install`/`start` (ex. `apt install wireguard-tools` sur Debian/Ubuntu), sinon le moteur échoue avec une erreur explicite ("commande 'wg' introuvable").
-
-## Installation Android / Termux
-
-> ℹ️ **Cette section ne concerne pas les utilisateurs de LABOSURF PRO.** Un utilisateur n'a besoin que d'un jeton d'activation (fourni par l'administrateur) et d'un client SSH comme **Termius** pour administrer son VPS — voir [Utilisation à distance](#utilisation-à-distance-pc-ou-android). Ce qui suit décrit un usage **interne à l'administrateur du projet** : exécuter localement, via **Termux**, le même binaire que celui installé sur le VPS (Termius ne peut pas exécuter de binaire local, seulement se connecter à distance).
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/PHILIPPO237/LABOSURF_PRO/main/labosurf-android.sh | bash
-```
-
-Ce script installe **le même binaire de base que le VPS** (compilé pour `android/arm64`) dans `$PREFIX/bin/labosurf`, plus la commande `menu`.
-
-**Ce que ce script fait réellement :**
-- vérifie que l'environnement est Termux (variable `$PREFIX`) et l'architecture (`arm64` requis)
-- télécharge `labosurf-android-arm64` et `SHA256SUMS` depuis la release GitHub, vérifie l'intégrité
-- installe le binaire, sans toucher au système Android au-delà de `$PREFIX/bin/`
-
-**Ce que ce script NE fait PAS** (limitation du bac à sable Android, pas un manque d'effort) :
-- pas de serveur VPN/TUN sur le téléphone (nécessite un accès root indisponible sur Android standard)
-- pas de `systemd` (inexistant sous Android)
-- pas de configuration réseau — le serveur tourne uniquement sur le VPS
-
-**Sur le téléphone de l'administrateur, `labosurf`/`menu` sert donc à** des tâches internes au propriétaire du projet (ex. `labosurf admin ...`, `labosurf portal`) — jamais à héberger le VPN lui-même. La génération des jetons d'activation distribués aux utilisateurs se fait via un outil séparé, privé.
-
-> Pour un **vrai client VPN Android** (app avec `VpnService`, tunnel réel), voir [`ANDROID_CLIENT.md`](ANDROID_CLIENT.md) : c'est un guide d'implémentation pour un projet Android séparé, non inclus dans ce dépôt — à ne pas confondre avec `labosurf-android.sh` ci-dessus.
 
 ## Utilisation à distance (PC ou Android)
 
@@ -260,7 +234,7 @@ cd LABOSURF_PRO
 - Go 1.22+ requis (`go.mod` : `go 1.22`)
 - Module racine (`labosurf`) + sous-module séparé `engines/udp` (son propre `go.mod`)
 
-Environnements de développement possibles : Linux natif, WSL (cas A ci-dessus), macOS, ou Termux/Android (`pkg install git golang`) — la compilation Go fonctionne à l'identique partout ; seul l'endroit où vous clonez le dépôt change (`$HOME/LABOSURF_PRO` ou tout autre chemin de votre choix).
+Environnements de développement possibles : Linux natif, WSL (cas A ci-dessus), macOS — la compilation Go fonctionne à l'identique partout ; seul l'endroit où vous clonez le dépôt change (`$HOME/LABOSURF_PRO` ou tout autre chemin de votre choix).
 
 ### Build local
 
@@ -325,7 +299,6 @@ LABOSURF_PRO/
 │   └── ssh/                      # SSH natif (golang.org/x/crypto/ssh)
 ├── .github/workflows/release.yml
 ├── labosurf-pro.sh             # Installateur VPS
-├── labosurf-android.sh          # Installateur Android/Termux
 ├── test_release_local.sh        # Script de confort (≠ simulation exacte de la CI, voir Développement)
 └── tools/deploy.sh              # Script de publication du mainteneur
 ```
@@ -348,7 +321,7 @@ LABOSURF_PRO/
 
 **Limitations connues** :
 - Gestionnaire multi-moteurs (`labosurf-mgr`) non installé par l'installateur standard (voir [limitation connue](#limitation-connue-gestionnaire-multi-moteurs)) — les hybrides ne sont donc pas composables depuis une installation VPS standard aujourd'hui.
-- WireGuard nécessite `wireguard-tools` installé manuellement (voir [Firewall](#firewall-ce-qui-est-automatique-et-ce-qui-ne-lest-pas)) et n'est pas disponible sur Android/Termux.
+- WireGuard nécessite `wireguard-tools` installé manuellement (voir [Firewall](#firewall-ce-qui-est-automatique-et-ce-qui-ne-lest-pas)) et n'est pas disponible sur Android.
 - TUIC et Hysteria2 partagent le port UDP/443 par défaut — un seul des deux peut tourner sans reconfiguration de port.
 - La génération automatique des secrets par compte (`EnsureEngineSecrets`) ne couvre pas encore tous les noms d'hybrides possibles (ex. futurs hybrides autres que les 4 listés ci-dessus) — voir `ARCHITECTURE_HYBRIDES.md` pour le détail.
 
