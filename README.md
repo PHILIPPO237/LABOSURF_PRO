@@ -2,11 +2,11 @@
 
 **Laboratoire du FreeSurf — PHILIPPO237**
 
-LABOSURF PRO est une plateforme multi-moteurs pour services VPN et tunnels réseau, déployée sur un VPS Linux via un installateur shell, puis administrée en CLI (SSH depuis un PC, ou Termux sur Android).
+LABOSURF PRO est une plateforme multi-moteurs pour services VPN et tunnels réseau, déployée sur un VPS Linux via un installateur shell, puis administrée en CLI par SSH — depuis un PC, ou depuis Android avec un client SSH comme **Termius** (le cas d'usage le plus courant : un VPS + un téléphone Android pour l'administrer). **Termux** (environnement Linux local sur Android) n'est nécessaire que pour un usage secondaire et optionnel — voir [Android](#android).
 
-Dernière version stable : **v1.2.3** — <https://github.com/PHILIPPO237/LABOSURF_PRO/releases/latest>
+Dernière version stable : **v1.3.0** — <https://github.com/PHILIPPO237/LABOSURF_PRO/releases/latest>
 
-> LABOSURF PRO est un projet distinct de **LABOSURF_LICENSE_MAKER** (générateur de licences, dépôt privé séparé). Les numéros de version des deux projets sont indépendants — une version `v1.3.x` du Maker n'a aucun rapport avec LABOSURF PRO.
+> LABOSURF PRO est un projet distinct de l'outil interne de génération de licences de l'administrateur (dépôt privé séparé, non public). Les numéros de version des deux projets sont indépendants.
 
 ## Moteurs disponibles
 
@@ -55,15 +55,18 @@ La génération de la configuration groupée de production (`ApplyServerConfig`/
 
 > L'installateur détecte la distribution via `/etc/os-release` (champ `ID`) ; seuls `debian`, `ubuntu`, `linuxmint`, `raspbian` sont reconnus sans avertissement. Toute distribution non basée sur `apt` + `systemd` fait échouer l'installation.
 
-### Android / Termux
+### Android
 
-| Composant | Statut |
-|---|---|
-| Téléchargement + vérification SHA-256 de l'asset `labosurf-android-arm64` | ✅ Vérifié dans ce dépôt |
-| Exécution du binaire sur un appareil Android/Termux réel | ⚠️ Non testé dans cette session (aucun appareil disponible) |
-| Architecture | **arm64 uniquement** — aucun binaire `armhf`/`x86` publié |
+**Ce dont un utilisateur a besoin sur Android : un client SSH, rien d'autre.** Il reçoit de l'administrateur un jeton d'activation, installe LABOSURF PRO sur son propre VPS avec le script d'installation (voir [Installation VPS](#installation-vps-linux)), puis administre ce VPS au quotidien depuis son téléphone avec **Termius** (client SSH dédié — hôtes/clés sauvegardés, SFTP, clavier adapté) ou tout autre client SSH Android :
 
-Voir [Installation Android / Termux](#installation-android-termux) pour ce que fait réellement ce binaire côté téléphone.
+```bash
+ssh root@<votre-vps>
+menu          # ou : labosurf
+```
+
+⚠️ **Termux ≠ Termius**, malgré la ressemblance du nom : Termius est un client SSH pur (se connecte à un serveur distant, c'est l'outil pertinent ci-dessus) ; Termux est un environnement Linux local sur Android (exécution de vrais binaires, `pkg install`). Un utilisateur normal n'a besoin ni de Termux, ni de rien installer localement.
+
+Termux ne sert qu'à un usage interne à l'administrateur du projet (génération des jetons d'activation via un outil privé séparé) — voir [Installation Android / Termux](#installation-android-termux) pour ce détail, hors du périmètre des utilisateurs finaux.
 
 ### WSL (Windows Subsystem for Linux)
 
@@ -116,6 +119,8 @@ L'installateur ouvre automatiquement, via `iptables` (ou `nft` en secours si `ip
 
 ## Installation Android / Termux
 
+> ℹ️ **Cette section ne concerne pas les utilisateurs de LABOSURF PRO.** Un utilisateur n'a besoin que d'un jeton d'activation (fourni par l'administrateur) et d'un client SSH comme **Termius** pour administrer son VPS — voir [Utilisation à distance](#utilisation-à-distance-pc-ou-android). Ce qui suit décrit un usage **interne à l'administrateur du projet** : exécuter localement, via **Termux**, le même binaire que celui installé sur le VPS (Termius ne peut pas exécuter de binaire local, seulement se connecter à distance).
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/PHILIPPO237/LABOSURF_PRO/main/labosurf-android.sh | bash
 ```
@@ -132,18 +137,20 @@ Ce script installe **le même binaire de base que le VPS** (compilé pour `andro
 - pas de `systemd` (inexistant sous Android)
 - pas de configuration réseau — le serveur tourne uniquement sur le VPS
 
-**Sur le téléphone, `labosurf`/`menu` sert donc à** : administrer les comptes (`labosurf admin ...`), gérer les licences (`labosurf license ...`), ou lancer le portail client (`labosurf portal`) — jamais à héberger le VPN lui-même.
+**Sur le téléphone de l'administrateur, `labosurf`/`menu` sert donc à** des tâches internes au propriétaire du projet (ex. `labosurf admin ...`, `labosurf portal`) — jamais à héberger le VPN lui-même. La génération des jetons d'activation distribués aux utilisateurs se fait via un outil séparé, privé.
 
 > Pour un **vrai client VPN Android** (app avec `VpnService`, tunnel réel), voir [`ANDROID_CLIENT.md`](ANDROID_CLIENT.md) : c'est un guide d'implémentation pour un projet Android séparé, non inclus dans ce dépôt — à ne pas confondre avec `labosurf-android.sh` ci-dessus.
 
-## Utilisation depuis un PC
+## Utilisation à distance (PC ou Android)
 
-Administration via SSH standard vers le VPS :
+Administration via SSH standard vers le VPS — depuis un PC (terminal, OpenSSH) :
 
 ```bash
 ssh root@<votre-vps>
 menu          # ou : labosurf
 ```
+
+Depuis Android, le résultat est identique avec **Termius** (ou tout autre client SSH) : créez un hôte avec l'IP du VPS et l'utilisateur `root` (ou l'utilisateur configuré), connectez-vous, puis lancez `menu` — c'est le workflow recommandé pour la majorité des utilisateurs (voir [Android](#android)).
 
 ## Gestion des moteurs
 
@@ -186,7 +193,7 @@ Le modèle de licence protège **l'accès au script d'installation**, pas l'exé
 - **Fenêtre de validité du jeton** : 3 heures après émission
 - **Usage** : 1 clé = 1 installation. Un reçu (`/etc/labosurf/.install_<id>.receipt`) empêche la réutilisation de la même clé
 - **Après installation** : le serveur démarre et tourne librement, **sans vérification de licence au runtime**
-- **Générateur de licences** (`LABOSURF_LICENSE_MAKER`) : projet séparé et privé, réservé à l'administrateur — ne jamais le déployer sur un VPS client
+- **Générateur de licences** : outil séparé et privé, réservé à l'administrateur — ne jamais le déployer sur un VPS client
 
 ## Comptes et abonnements
 
