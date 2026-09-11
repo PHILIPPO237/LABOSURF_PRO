@@ -13,8 +13,17 @@ const (
 	EngineUDP      = "udp"
 	EngineXray     = "xray"
 	EngineHysteria = "hysteria"
-	EngineDNSTT    = "dnstt"
-	EngineSlowDNS  = "slowdns"
+	// EngineHysteria2 : protocole Hysteria2 OFFICIEL (binaire apernet/hysteria,
+	// voir engines/hysteria2) — distinct d'EngineHysteria (moteur maison, non
+	// officiel). Ne jamais fusionner ces deux constantes.
+	EngineHysteria2 = "hysteria2"
+	EngineDNSTT     = "dnstt"
+	EngineSlowDNS   = "slowdns"
+	EngineTUIC      = "tuic"
+	// EngineWireGuard : protocole WireGuard, supervisé via les outils
+	// système wg/wg-quick (module noyau) — voir engines/wireguard. Moteur
+	// VPN terminal, comme EngineHysteria2/EngineTUIC.
+	EngineWireGuard = "wireguard"
 	// EngineSSH : un compte peut disposer d'un accès SSH (shell via clé
 	// publique) comme d'un accès aux tunnels VPN.
 	EngineSSH = "ssh"
@@ -53,6 +62,7 @@ type EngineGrant struct {
 	//	xray     -> {"uuid": "…", "port": 443, "flow": "xtls-rprx-vision"}
 	//	hysteria -> {"password": "…", "up": 100000000, "down": 300000000}
 	//	dnstt/slowdns -> {"public_key": "…", "server": "…", "port": 53}
+	//	tuic     -> {"uuid": "…", "password": "…"}
 	Config map[string]any `json:"config,omitempty"`
 
 	Enabled bool `json:"enabled"`

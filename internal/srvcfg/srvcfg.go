@@ -31,9 +31,20 @@ func DefaultPorts() map[string]int {
 		"udp":      5667,
 		"xray":     443,
 		"hysteria": 8443,
-		"slowdns":  53,
-		"dnstt":    53,
-		"ssh":      22,
+		"tuic":     443,
+		// "hysteria2" (protocole officiel) partage le port 443/UDP par
+		// convention officielle avec "tuic" — collision assumée et
+		// documentée (voir internal/engineutil/compat.go), pas un défaut :
+		// un opérateur qui active les deux simultanément doit reconfigurer
+		// l'un des deux ports via SetPort. Ne pas changer arbitrairement le
+		// port de "tuic" ni de "hysteria" (maison, 8443) pour l'éviter.
+		"hysteria2": 443,
+		// Port UDP conventionnel WireGuard — aucune collision avec les
+		// autres moteurs de cette table.
+		"wireguard": 51820,
+		"slowdns":   53,
+		"dnstt":     53,
+		"ssh":       22,
 	}
 }
 

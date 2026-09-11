@@ -19,7 +19,7 @@ files_to_check = [
     'engines/udp/registry.go',
 ]
 
-base = '/mnt/c/Users/atsan/OneDrive/Bureau/LABOSURF_PRO'
+base = os.path.dirname(os.path.abspath(__file__))
 
 for f in files_to_check:
     name = os.path.basename(f).replace('.go', '')

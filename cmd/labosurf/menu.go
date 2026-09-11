@@ -447,6 +447,9 @@ func menuStatusDeep(e engine.Engine) {
 	fmt.Printf("  Installé : %v\n", st.Installed)
 	fmt.Printf("  En cours : %v\n", st.Running)
 	fmt.Printf("  PID      : %d\n", st.PID)
+	if st.ListenAddr != "" {
+		fmt.Printf("  Écoute   : %s\n", st.ListenAddr)
+	}
 	if st.Uptime != "" {
 		fmt.Printf("  Uptime   : %s\n", st.Uptime)
 	}
@@ -459,8 +462,55 @@ func menuStatusDeep(e engine.Engine) {
 	} else {
 		fmt.Printf("\n  Santé    : %s\n", green("✔ opérationnel"))
 	}
+	printChainBreakdown(e)
 	fmt.Println()
 	pauseMenu()
+}
+
+// printChainBreakdown affiche, pour tout moteur hybride composé
+// (*engineutil.CompositeEngine — détecté génériquement, jamais par un
+// `if name == "..."` sur une combinaison précise), l'état RÉEL de chaque
+// composant de la chaîne suivi de l'état agrégé de la chaîne entière, ex :
+//
+//	● ON  TUIC
+//	● ON  SSH
+//	● ON  XRAY
+//	● ON  CHAIN
+//
+// N'affiche jamais les cinq futures chaînes candidates (TUIC+SSH+Xray,
+// etc.) : ce bloc ne réagit qu'à un hybride RÉELLEMENT composé (menu
+// "CRÉER UN MOTEUR HYBRIDE"), quel qu'il soit — préparation générique de la
+// CLI, pas une déclaration de fonctionnalité pour ces combinaisons.
+func printChainBreakdown(e engine.Engine) {
+	ce, ok := e.(*engineutil.CompositeEngine)
+	if !ok {
+		return
+	}
+	fmt.Println()
+	fmt.Println("  ── COMPOSANTS DE LA CHAÎNE ─────────────────────────────")
+	allRunning := len(ce.Components) > 0
+	for _, compName := range ce.Components {
+		sub, err := ce.Component(compName)
+		if err != nil {
+			fmt.Printf("  %s %-10s %s\n", dim("●"), strings.ToUpper(compName), red("erreur : "+err.Error()))
+			allRunning = false
+			continue
+		}
+		running := sub.Status().Running
+		if !running {
+			allRunning = false
+		}
+		dot := dim("●") + " " + dim("OFF")
+		if running {
+			dot = green("●") + " " + green("ON ")
+		}
+		fmt.Printf("  %s  %-10s\n", dot, strings.ToUpper(compName))
+	}
+	chainDot := dim("●") + " " + dim("OFF")
+	if allRunning {
+		chainDot = green("●") + " " + green("ON ")
+	}
+	fmt.Printf("  %s  %-10s\n", chainDot, "CHAIN")
 }
 
 func menuLogs(e engine.Engine) {
@@ -977,21 +1027,21 @@ func printAbout() {
 
 // ── Helpers d'affichage ────────────────────────────────────
 const (
-	cReset = "\033[0m"  // reset
-	cDim   = "\033[2m"  // gris
-	cGreen = "\033[1;32m"
-	cRed   = "\033[1;31m"
-	cCyan  = "\033[1;36m"
+	cReset  = "\033[0m" // reset
+	cDim    = "\033[2m" // gris
+	cGreen  = "\033[1;32m"
+	cRed    = "\033[1;31m"
+	cCyan   = "\033[1;36m"
 	cYellow = "\033[1;33m"
 )
 
-func green(s string) string   { return cGreen + s + cReset }
-func red(s string) string     { return cRed + s + cReset }
-func cyan(s string) string    { return cCyan + s + cReset }
-func dim(s string) string     { return cDim + s + cReset }
-func yellow(s string) string  { return cYellow + s + cReset }
+func green(s string) string       { return cGreen + s + cReset }
+func red(s string) string         { return cRed + s + cReset }
+func cyan(s string) string        { return cCyan + s + cReset }
+func dim(s string) string         { return cDim + s + cReset }
+func yellow(s string) string      { return cYellow + s + cReset }
 func name(e engine.Engine) string { return e.Name() }
-func itoa(n int) string       { return fmt.Sprintf("%d", n) }
+func itoa(n int) string           { return fmt.Sprintf("%d", n) }
 
 func defaultInstallConfig() engine.InstallConfig {
 	return engine.InstallConfig{

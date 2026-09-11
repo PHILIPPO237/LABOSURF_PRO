@@ -53,7 +53,7 @@ for goos_arch in linux/amd64 linux/arm64 android/arm64; do
     go build -trimpath -o "$WORK/dist/labosurf-mgr-${GOOS}-${GOARCH}" ./cmd/labosurf \
     || fail "compilation labosurf-mgr-${GOOS}-${GOARCH} échouée"
 done
-for name in xray slowdns dnstt hysteria udp ssh; do
+for name in xray slowdns dnstt hysteria tuic hysteria2 wireguard udp ssh; do
   for goos_arch in linux/amd64 linux/arm64 android/arm64; do
     GOOS="${goos_arch%/*}"; GOARCH="${goos_arch#*/}"
     CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
@@ -61,7 +61,7 @@ for name in xray slowdns dnstt hysteria udp ssh; do
       || fail "compilation labosurf-${name}-${GOOS}-${GOARCH} échouée"
   done
 done
-ok "3 gestionnaires + 18 moteurs compilés"
+ok "3 gestionnaires + 27 moteurs compilés"
 
 # ── Étape "Copy public key and checksums" ──
 info "Étape 5/7 : clé publique + SHA256SUMS..."
@@ -76,7 +76,7 @@ EXPECTED=""
 for goos_arch in linux/amd64 linux/arm64 android/arm64; do
   GOOS="${goos_arch%/*}"; GOARCH="${goos_arch#*/}"
   EXPECTED="$EXPECTED labosurf-${GOOS}-${GOARCH} labosurf-mgr-${GOOS}-${GOARCH}"
-  for name in xray slowdns dnstt hysteria udp ssh; do
+  for name in xray slowdns dnstt hysteria tuic hysteria2 wireguard udp ssh; do
     EXPECTED="$EXPECTED labosurf-${name}-${GOOS}-${GOARCH}"
   done
 done

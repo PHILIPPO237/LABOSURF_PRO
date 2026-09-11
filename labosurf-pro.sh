@@ -44,7 +44,7 @@ INSTALLER_VERSION="$(git -C "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" desc
 # Les moteurs hybrides sont créés dynamiquement depuis le menu central
 # (composition libre de moteurs avec guide de compatibilité) ; ils ne sont
 # donc pas énumérés ici. Binaires de moteurs principaux :
-ENGINE_NAMES="xray slowdns dnstt hysteria udp ssh"
+ENGINE_NAMES="xray slowdns dnstt hysteria tuic hysteria2 wireguard udp ssh"
 
 # ── Détection des capacités du terminal ────────────────────
 IS_TTY_OUT=0

@@ -16,6 +16,8 @@ import (
 //	hysteria           -> {"password": "<secret>"}
 //	dnstt / slowdns    -> {"public_key":"<hex>", "private_key":"<hex>"}
 //	ssh                -> {"public_key":"<hex>", "private_key":"<hex>"}
+//	tuic               -> {"uuid": "<uuid v4>", "password": "<secret>"}
+//	wireguard          -> {"private_key":"<base64>", "public_key":"<base64>", "address":"10.66.0.N/32"}
 func (s *Store) EnsureEngineSecrets(accountID, engine string) (Account, error) {
 	acc, ok := s.GetAccount(accountID)
 	if !ok {
@@ -52,6 +54,27 @@ func (s *Store) EnsureEngineSecrets(accountID, engine string) (Account, error) {
 			cfg["password"] = tk
 			changed = true
 		}
+	case EngineTUIC:
+		// TUIC authentifie par la paire UUID + mot de passe (voir schéma
+		// officiel tuic-server dans AUDIT_TUIC_INTEGRATION.md §2) : les deux
+		// secrets sont nécessaires, contrairement à xray (uuid seul) ou
+		// hysteria (mot de passe seul).
+		if strVal(cfg["uuid"]) == "" {
+			u, err := secret.UUID()
+			if err != nil {
+				return Account{}, err
+			}
+			cfg["uuid"] = u
+			changed = true
+		}
+		if strVal(cfg["password"]) == "" {
+			tk, err := secret.RandToken(12)
+			if err != nil {
+				return Account{}, err
+			}
+			cfg["password"] = tk
+			changed = true
+		}
 	case EngineDNSTT, EngineSlowDNS:
 		if strVal(cfg["public_key"]) == "" || strVal(cfg["private_key"]) == "" {
 			pub, priv, err := secret.Ed25519Keypair()
@@ -72,12 +95,71 @@ func (s *Store) EnsureEngineSecrets(accountID, engine string) (Account, error) {
 			cfg["private_key"] = priv
 			changed = true
 		}
+	case EngineWireGuard:
+		// Modification volontaire et minimale d'EnsureEngineSecrets (mission
+		// P2) : contrairement aux autres secrets ci-dessus (indépendants par
+		// compte), l'adresse VPN WireGuard d'un compte DOIT être unique à
+		// l'échelle de TOUS les comptes — deux peers avec la même adresse
+		// casseraient le routage des deux. C'est un problème directement
+		// bloquant pour que WireGuard soit fonctionnel (pas cosmétique),
+		// justifiant cet ajout ciblé plutôt qu'un contournement fragile
+		// ailleurs (ex: générée à la volée dans clientcfg sans persistance,
+		// ce qui produirait une adresse DIFFÉRENTE à chaque régénération de
+		// la config serveur).
+		if strVal(cfg["private_key"]) == "" || strVal(cfg["public_key"]) == "" {
+			priv, pub, err := secret.X25519Keypair()
+			if err != nil {
+				return Account{}, err
+			}
+			cfg["private_key"] = priv
+			cfg["public_key"] = pub
+			changed = true
+		}
+		if strVal(cfg["address"]) == "" {
+			addr, err := s.nextWireGuardAddress()
+			if err != nil {
+				return Account{}, err
+			}
+			cfg["address"] = addr
+			changed = true
+		}
 	}
 
 	if !changed {
 		return acc, nil
 	}
 	return s.SetGrantConfig(accountID, engine, cfg)
+}
+
+// wireguardAddressFormat est le patron d'adresse VPN allouée par
+// nextWireGuardAddress ci-dessous : sous-réseau LABOSURF fixe 10.66.0.0/24,
+// .1 réservée à l'interface serveur (voir internal/clientcfg/wireguard.go),
+// .2 à .254 allouées aux comptes.
+const wireguardAddressFormat = "10.66.0.%d/32"
+
+// nextWireGuardAddress alloue la première adresse libre du pool VPN
+// WireGuard LABOSURF, en inspectant les adresses déjà attribuées à TOUS les
+// comptes (pas seulement celui en cours) pour garantir l'unicité — voir le
+// commentaire du cas EngineWireGuard ci-dessus pour la justification de cet
+// ajout à EnsureEngineSecrets.
+func (s *Store) nextWireGuardAddress() (string, error) {
+	used := map[int]bool{}
+	for _, a := range s.ListAccounts() {
+		g := a.Grants[EngineWireGuard]
+		if g == nil || g.Config == nil {
+			continue
+		}
+		var n int
+		if _, err := fmt.Sscanf(strVal(g.Config["address"]), wireguardAddressFormat, &n); err == nil {
+			used[n] = true
+		}
+	}
+	for n := 2; n < 255; n++ {
+		if !used[n] {
+			return fmt.Sprintf(wireguardAddressFormat, n), nil
+		}
+	}
+	return "", fmt.Errorf("pool d'adresses WireGuard épuisé (10.66.0.0/24, 253 comptes max)")
 }
 
 // grantSecret lit une chaîne dans le Config d'un grant.

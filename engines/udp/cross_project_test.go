@@ -12,14 +12,27 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
-const (
-	makerPrivKeyPath = `C:\Users\atsan\OneDrive\Bureau\LABOSURF_LICENSE_MAKER\labosurf_admin.key`
-	proPubKeyPath    = `C:\Users\atsan\OneDrive\Bureau\LABOSURF_PRO\release\license_pub.key`
-)
+// makerPrivKeyPath et proPubKeyPath localisent les vraies clés de production
+// pour ce test cross-projet, exécuté uniquement en local par un développeur
+// qui possède les deux dépôts (voir setupRealKeys : absent = test skippé,
+// jamais un échec). Par défaut on suppose la disposition en dépôts frères
+// (LABOSURF_LICENSE_MAKER cloné à côté de LABOSURF_PRO) ; LABOSURF_MAKER_PRIVKEY
+// permet de pointer vers un autre emplacement sans modifier ce fichier.
+func makerPrivKeyPath() string {
+	if p := os.Getenv("LABOSURF_MAKER_PRIVKEY"); p != "" {
+		return p
+	}
+	return filepath.Join("..", "..", "..", "LABOSURF_LICENSE_MAKER", "labosurf_admin.key")
+}
+
+func proPubKeyPath() string {
+	return filepath.Join("..", "..", "release", "license_pub.key")
+}
 
 // setupRealKeys charge les vraies clés des deux projets.
 // Retourne false si les fichiers sont absents (test skippé proprement).
@@ -31,7 +44,7 @@ const (
 func setupRealKeys(t *testing.T) bool {
 	t.Helper()
 
-	privRaw, err := os.ReadFile(makerPrivKeyPath)
+	privRaw, err := os.ReadFile(makerPrivKeyPath())
 	if err != nil {
 		t.Logf("clé privée Maker absente (%v) — test skippé", err)
 		return false
@@ -42,7 +55,7 @@ func setupRealKeys(t *testing.T) bool {
 		return false
 	}
 
-	pubRaw, err := os.ReadFile(proPubKeyPath)
+	pubRaw, err := os.ReadFile(proPubKeyPath())
 	if err != nil {
 		t.Logf("clé publique PRO absente (%v) — test skippé", err)
 		return false

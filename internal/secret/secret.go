@@ -1,16 +1,22 @@
 // Package secret centralise la génération des secrets et identifiants
 // nécessaires aux moteurs LABOSURF : UUID (Xray), secrets aléatoires,
-// et paires de clés Ed25519 (dnstt/slowdns, licences).
+// paires de clés Ed25519 (dnstt/slowdns, licences) et paires de clés
+// Curve25519/X25519 (WireGuard).
 //
-// Toutes les fonctions sont pures (aucun I/O) et sans dépendance externe,
-// ce qui les rend testables à l'unité.
+// Toutes les fonctions sont pures (aucun I/O). Sans dépendance externe à
+// l'exception de golang.org/x/crypto/curve25519 (X25519Keypair) — déjà une
+// dépendance du module racine (utilisée par engines/ssh), pas une nouvelle
+// entrée go.mod.
 package secret
 
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+
+	"golang.org/x/crypto/curve25519"
 )
 
 // UUID génère un identifiant UUID v4 aléatoire (canonique, en minuscules),
@@ -69,6 +75,42 @@ func Ed25519Keypair() (pubHex, privHex string, err error) {
 // graine 32 octets (format PEM de dnstt : clé privée). Retourne l'hex.
 func Ed25519SecretKeyFromSeed(seed []byte) string {
 	return hex.EncodeToString(ed25519.NewKeyFromSeed(seed))
+}
+
+// X25519Keypair génère une paire de clés Curve25519 (X25519), utilisée par
+// WireGuard — clé privée/publique 32 octets, encodées en base64 STANDARD
+// (convention WireGuard officielle, différente du hex utilisé par
+// Ed25519Keypair ci-dessus). Le "clamping" appliqué à la clé privée suit
+// RFC 7748 §5 (identique à la convention WireGuard officielle : wg genkey
+// applique le même clamping avant dérivation).
+func X25519Keypair() (privBase64, pubBase64 string, err error) {
+	var priv [32]byte
+	if _, err := rand.Read(priv[:]); err != nil {
+		return "", "", fmt.Errorf("x25519 : %w", err)
+	}
+	priv[0] &= 248
+	priv[31] &= 127
+	priv[31] |= 64
+
+	pub, err := curve25519.X25519(priv[:], curve25519.Basepoint)
+	if err != nil {
+		return "", "", fmt.Errorf("x25519 dérivation clé publique : %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(priv[:]), base64.StdEncoding.EncodeToString(pub), nil
+}
+
+// X25519PublicFromPrivate dérive la clé publique WireGuard (base64) d'une
+// clé privée WireGuard (base64) — équivalent de `wg pubkey`, en Go pur.
+func X25519PublicFromPrivate(privBase64 string) (string, error) {
+	priv, err := base64.StdEncoding.DecodeString(privBase64)
+	if err != nil || len(priv) != 32 {
+		return "", fmt.Errorf("clé privée WireGuard invalide (attendu 32 octets en base64)")
+	}
+	pub, err := curve25519.X25519(priv, curve25519.Basepoint)
+	if err != nil {
+		return "", fmt.Errorf("x25519 dérivation clé publique : %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(pub), nil
 }
 
 // PublicKeyHex dérive la clé publique (hex) d'une clé privée Ed25519 (hex).

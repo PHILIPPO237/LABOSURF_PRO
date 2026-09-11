@@ -1,41 +1,37 @@
 # Publication LABOSURF PRO
 
+Ce document s'adresse au **mainteneur** du dépôt (accès en écriture + authentification GitHub). Remplacez les chemins ci-dessous par l'emplacement réel de votre clone (`$HOME/LABOSURF_PRO`, `~/LABOSURF_PRO`, ou tout autre dossier).
+
 ## Déploiement local
 
-### Android / Termux
+### Linux / Android (Termux) / WSL
 ```bash
-cd /storage/emulated/0/MT2/FREE-SURF/LABOSURF_PRO/
+cd LABOSURF_PRO   # ou : cd $HOME/LABOSURF_PRO
 ./tools/deploy.sh "LABOSURF PRO: publication"
 ```
-Prérequis : Termux, Git, Go, authentification GitHub (SSH ou token).
+Prérequis : Git, Go, authentification GitHub (SSH ou token). Sous Termux, installez d'abord `pkg install git golang`.
 
-### PC / Kali WSL
-```bash
-cd /mnt/c/Users/atsan/OneDrive/Bureau/LABOSURF_PRO
-./tools/deploy.sh "LABOSURF PRO: publication"
-```
-Depuis PowerShell : `tools/deploy.ps1` (lance via WSL).
-
-### Windows natif
+### Windows natif (PowerShell)
 ```powershell
-cd C:\Users\atsan\OneDrive\Bureau\LABOSURF_PRO
+cd LABOSURF_PRO
 ./tools/deploy.ps1 "LABOSURF PRO: publication"
 ```
+Depuis WSL, `./tools/deploy.sh` fonctionne directement (voir ci-dessus).
 
 ## Release (GitHub Actions)
 
 ### Créer une release
 ```bash
-git tag v1.2.0
-git push origin v1.2.0
+git tag vX.Y.Z          # ex. v1.2.4 — utiliser le prochain numéro réel, jamais réutiliser un tag existant
+git push origin vX.Y.Z
 ```
 
 ### Ce que fait le workflow (`.github/workflows/release.yml`)
-1. **Tests** : `go vet ./...` + `go test ./internal/...` + `go test ./engines/udp/...`
-2. **Build UDP Engine** : 3 binaires (linux/amd64, linux/arm64, android/arm64) avec clé publique embarquée
-3. **Build Gestionnaire** : 3 binaires (amd64/arm64/android) pour `labosurf` multi-moteurs
-4. **Build Moteurs natifs** : 6 moteurs × 3 archs = 18 binaires
-   - `labosurf-udp`, `labosurf-xray`, `labosurf-hysteria`, `labosurf-slowdns`, `labosurf-dnstt`, `labosurf-ssh`
+1. **Tests** : `go vet ./...` + `go test ./internal/...` + `go build ./...`, puis dans `engines/udp` : `go vet ./...` + `go test` avec un filtre `-run` (tests réseau flaky exclus volontairement — voir le fichier pour la liste exacte)
+2. **Build UDP Engine** : 3 binaires (linux/amd64, linux/arm64, android/arm64) avec clé publique embarquée — c'est ce binaire qui est publié sous le nom `labosurf-<arch>` et installé sur le VPS/Android
+3. **Build Gestionnaire** : 3 binaires (amd64/arm64/android) `labosurf-mgr-<arch>` — publiés mais **non installés** par `labosurf-pro.sh` (voir [limitation connue](README.md#limitation-connue-gestionnaire-multi-moteurs))
+4. **Build Moteurs natifs** : 9 moteurs × 3 archs = 27 binaires
+   - `labosurf-udp`, `labosurf-xray`, `labosurf-hysteria`, `labosurf-tuic`, `labosurf-hysteria2`, `labosurf-wireguard`, `labosurf-slowdns`, `labosurf-dnstt`, `labosurf-ssh`
 5. **Checksums** : `SHA256SUMS` unique pour tous les artefacts + `license_pub.key` + exemple
 6. **Release GitHub** : `gh release create` avec assets + notes auto
 
@@ -48,7 +44,7 @@ git push origin v1.2.0
 | `labosurf-mgr-linux-amd64` | Gestionnaire multi-moteurs (amd64) |
 | `labosurf-mgr-linux-arm64` | Gestionnaire multi-moteurs (arm64) |
 | `labosurf-mgr-android-arm64` | Gestionnaire multi-moteurs (Android) |
-| `labosurf-<moteur>-<arch>` | 18 binaires moteurs natifs |
+| `labosurf-<moteur>-<arch>` | 27 binaires moteurs natifs |
 | `license_pub.key` | Clé publique Ed25519 (vérification) |
 | `license_pub.key.example` | Exemple de clé publique |
 | `SHA256SUMS` | Checksums de tous les artefacts |
@@ -57,14 +53,9 @@ git push origin v1.2.0
 ```bash
 ./test_release_local.sh
 ```
-Simule le workflow CI complet localement (tests, builds, checksums, validation ELF/clé).
+Reproduit approximativement le workflow CI localement (tests, builds, checksums, validation ELF/clé) — mais lance `go test ./...` sans le filtre `-run` que la CI applique dans `engines/udp`, donc ce n'est pas une simulation exacte (voir [Développement](README.md#build-local) dans le README).
 
 ## Configuration préalable
-
-### GitHub Repository Variables
-| Variable | Description |
-|----------|-------------|
-| `LABOSURF_LICENSE_PUBKEY` | (Obsolète) Clé publique hex 64 chars — maintenant lue depuis `release/license_pub.key` |
 
 ### Fichiers commités requis
 - `release/license_pub.key` — Clé publique de production (64 hex, committée via exception `.gitignore`)
@@ -102,22 +93,7 @@ git push
 
 ### OS supportés pour l'installation VPS
 
-| Distribution | Statut | Gestionnaire de paquets | Notes |
-|--------------|--------|------------------------|-------|
-| **Ubuntu** 20.04, 22.04, 24.04+ | ✅ Officiel | apt | Testé en CI (24.04) |
-| **Debian** 11 (Bullseye), 12 (Bookworm) | ✅ Officiel | apt | |
-| **Linux Mint** 20, 21+ | ✅ Officiel | apt | Basé sur Ubuntu LTS |
-| **Raspberry Pi OS** (Raspbian) | ✅ Officiel | apt | ARM64/ARMHF |
-| **Debian-based dérivées** (Pop!_OS, Elementary, etc.) | ✅ Compatible | apt | Hérite de Debian/Ubuntu |
-
-| Distribution | Statut | Note |
-|--------------|--------|------|
-| CentOS / RHEL / Rocky / AlmaLinux | ⚠️ Expérimental | Utilise `dnf`/`yum` — non testé, installation `apt` échouera |
-| Fedora | ⚠️ Expérimental | Utilise `dnf` — non testé |
-| Alpine Linux | ❌ Non supporté | Utilise `apk` + `musl libc` |
-| Arch Linux / Manjaro | ❌ Non supporté | Utilise `pacman` |
-
-> **Note** : Le script d'installation utilise `apt` et `systemd`. Pour les distributions non-Debian, l'installation **échouera**.
+Voir la [matrice de compatibilité complète](README.md#matrice-de-compatibilité) dans le README — ne pas dupliquer ce tableau ici pour éviter qu'il diverge.
 
 ### Script automatique
 ```bash
@@ -125,21 +101,24 @@ curl -fsSL https://raw.githubusercontent.com/PHILIPPO237/LABOSURF_PRO/main/labos
 ```
 
 ### Étapes manuelles (si besoin)
-1. Télécharger binaires depuis `https://github.com/PHILIPPO237/LABOSURF_PRO/releases/tag/vX.Y.Z`
+1. Télécharger les binaires depuis `https://github.com/PHILIPPO237/LABOSURF_PRO/releases/tag/vX.Y.Z`
 2. Vérifier `sha256sum -c SHA256SUMS`
-3. Installer `labosurf` + `labosurf-mgr` + moteurs dans `/usr/local/bin/`
+3. Installer `labosurf` (binaire `engines/udp`, PAS `labosurf-mgr` — voir [limitation connue](README.md#limitation-connue-gestionnaire-multi-moteurs)) + les moteurs voulus dans `/usr/local/bin/`
 4. Copier `license_pub.key` vers `/etc/labosurf/`
 5. Configurer `/etc/labosurf/config.json` (ports, domaine, backend)
-6. `labosurf engine license activate <TOKEN>`
+6. `labosurf license activate -token <TOKEN>` (pas de préfixe `engine` — ce sous-comande n'existe pas dans le binaire `labosurf` installé)
 7. `systemctl enable --now labosurf-<moteur>` pour chaque moteur
-8. Configurer firewall (ports 5667/UDP, 443, 8443, 53/UDP, 22/TCP)
+8. Ouvrir manuellement les ports firewall des moteurs installés autres que UDP/portail (l'installateur automatique n'ouvre que 5667/UDP et 8080/TCP — voir [Firewall](README.md#firewall-ce-qui-est-automatique-et-ce-qui-ne-lest-pas))
 
 ## Ports par défaut
 | Service | Port | Protocole | Moteur |
 |---------|------|-----------|--------|
 | UDP Engine | 5667 | UDP | udp |
 | Xray (VLESS/Trojan) | 443 | TCP | xray |
-| Hysteria | 8443 | UDP | hysteria |
+| Hysteria (maison) | 8443 | UDP | hysteria |
+| TUIC (officiel) | 443 | UDP | tuic |
+| Hysteria2 (officiel) | 443 | UDP | hysteria2 — collision UDP/443 avec TUIC assumée, voir README |
+| WireGuard | 51820 | UDP | wireguard — nécessite `wireguard-tools` système, voir README |
 | SlowDNS | 53 | UDP | slowdns |
 | DNSTT | 53 | UDP | dnstt |
 | SSH | 22 | TCP | ssh |

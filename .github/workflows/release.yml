@@ -80,7 +80,7 @@ jobs:
               ./cmd/labosurf
           done
           # Moteurs autonomes (cmd/labosurf-<name>)
-          ENGINES="xray slowdns dnstt hysteria udp ssh"
+          ENGINES="xray slowdns dnstt hysteria udp ssh tuic hysteria2 wireguard"
           for name in $ENGINES; do
             for goos_arch in linux/amd64 linux/arm64 android/arm64; do
               GOOS="${goos_arch%/*}"; GOARCH="${goos_arch#*/}"
@@ -109,7 +109,7 @@ jobs:
             GOOS="${goos_arch%/*}"; GOARCH="${goos_arch#*/}"
             test -f "labosurf-${GOOS}-${GOARCH}" || { echo "MANQUANT labosurf-${GOOS}-${GOARCH}"; exit 1; }
             test -f "labosurf-mgr-${GOOS}-${GOARCH}" || { echo "MANQUANT labosurf-mgr-${GOOS}-${GOARCH}"; exit 1; }
-            for name in xray slowdns dnstt hysteria udp ssh; do
+            for name in xray slowdns dnstt hysteria udp ssh tuic hysteria2 wireguard; do
               test -f "labosurf-${name}-${GOOS}-${GOARCH}" || { echo "MANQUANT labosurf-${name}-${GOOS}-${GOARCH}"; exit 1; }
             done
           done

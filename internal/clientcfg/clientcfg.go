@@ -85,6 +85,35 @@ func Generate(acc store.Account, engineName string, prof srvcfg.Profile) (Client
 		res.ClientLink = fmt.Sprintf("hysteria://%s@%s:%d", pw, host, port)
 		res.ServerConfig = hysteriaServerConfig(acc, pw)
 
+	case store.EngineTUIC:
+		uuid := grantString(acc, store.EngineTUIC, "uuid")
+		if uuid == "" {
+			uuid = "UUID-MANQUANT"
+		}
+		pw := grantString(acc, store.EngineTUIC, "password")
+		if pw == "" {
+			pw = acc.Password
+		}
+		res.ClientLink = tuicLink(uuid, pw, host, port)
+		res.ServerConfig = tuicServerConfig(uuid, pw)
+
+	case store.EngineHysteria2:
+		pw := hysteria2Password(acc)
+		link, err := hysteria2Link(acc.Username, pw, host, port)
+		if err != nil {
+			return ClientResult{}, err
+		}
+		res.ClientLink = link
+		res.ServerConfig = hysteria2ServerConfig(acc, prof)
+
+	case store.EngineWireGuard:
+		cfgText, err := wireguardClientConfig(acc, host, port)
+		if err != nil {
+			return ClientResult{}, err
+		}
+		res.ClientLink = cfgText
+		res.ServerConfig = wireguardServerConfig(acc, prof)
+
 	case store.EngineSSH:
 		res.ClientLink = fmt.Sprintf("ssh %s@%s -p %d", acc.Username, host, port)
 		// La config serveur SSH est gérée via authorized_keys (hors JSON).
@@ -352,6 +381,15 @@ func hybridClientLink(acc store.Account, engineName, host string, port int, prof
 // ApplyServerConfig régénère et applique la configuration SERVEUR groupée d'un
 // moteur : elle rassemble tous les comptes autorisés sur ce moteur (depuis le
 // store central) et l'écrit via engine.Configure. Le moteur doit être installé.
+//
+// Pour un moteur hybride (CompositeEngine), la configuration n'est PAS
+// réduite à celle du VPN principal : chaque composant (transport, backend)
+// reçoit sa propre configuration correctement formée, via ComponentConfig
+// (voir buildComponentConfigs) — sans quoi le composant transport
+// (dnstt/slowdns) ne recevait jamais son domaine/port/utilisateurs et sa
+// configuration réelle était silencieusement écrasée par celle du VPN
+// principal, ou par un placeholder générique (voir ARCHITECTURE_HYBRIDES.md
+// §12.5). Pour un moteur simple, le comportement est strictement inchangé.
 func ApplyServerConfig(ctx context.Context, s *store.Store, engineName string, prof srvcfg.Profile) error {
 	if prof.Host == "" {
 		return fmt.Errorf("hôte du serveur non défini : configurez le profil serveur")
@@ -368,8 +406,75 @@ func ApplyServerConfig(ctx context.Context, s *store.Store, engineName string, p
 		}
 	}
 	accounts := authorizedAccounts(s, engineName)
+
+	if ce, ok := e.(*engineutil.CompositeEngine); ok {
+		componentCfgs := buildComponentConfigs(engineName, ce.Components, accounts, prof)
+		ce.ComponentConfig = componentCfgs
+
+		// Config "partagée" : diagnostic uniquement (engine.EngineConfig.JSON
+		// mémorisé par CompositeEngine.lastCfg) — ComponentConfig couvre déjà
+		// systématiquement CHAQUE composant ci-dessus, donc cette valeur
+		// n'est en pratique jamais utilisée par la boucle de Configure().
+		shared := engine.EngineConfig{}
+		primary := primaryVPN(engineName)
+		if primary == "" && len(ce.Components) > 0 {
+			primary = ce.Components[0]
+		}
+		if cfg, ok := componentCfgs[primary]; ok {
+			shared = cfg
+		}
+		return e.Configure(ctx, shared)
+	}
+
 	serverJSON := buildGroupedConfig(engineName, accounts, prof)
 	return e.Configure(ctx, engine.EngineConfig{JSON: serverJSON})
+}
+
+// buildComponentConfigs construit, pour un hybride, la configuration JSON
+// PROPRE à chaque composant en réutilisant telle quelle la fonction de
+// génération existante par moteur simple (buildGroupedConfig) — jamais un
+// blob partagé, jamais le VPN principal seul. C'est exactement le résultat
+// attendu par CompositeEngine.ComponentConfig (voir composite_engine.go).
+//
+// Un compte n'a aujourd'hui qu'un seul grant, sous le nom hybride littéral
+// (ex: "dnstt-xray" — voir cmd/labosurf/menu.go:promptEngineAttach, qui
+// n'accorde jamais de grant séparé par composant). aliasGrantForComponent
+// permet donc à chaque appel de buildGroupedConfig(component, ...), qui lit
+// ses champs sous acc.Grants[component], de retrouver la même configuration
+// que celle déjà utilisée par le lien client (hybridClientLink lit aussi
+// acc.Grants[hybridName]) — sans exiger un second grant par composant.
+func buildComponentConfigs(hybridName string, components []string, accounts []store.Account, prof srvcfg.Profile) map[string]engine.EngineConfig {
+	out := make(map[string]engine.EngineConfig, len(components))
+	for _, component := range components {
+		shadow := aliasGrantForComponent(accounts, hybridName, component)
+		out[component] = engine.EngineConfig{JSON: buildGroupedConfig(component, shadow, prof)}
+	}
+	return out
+}
+
+// aliasGrantForComponent retourne une copie de accounts où, pour chaque
+// compte, le grant du composant nommé "component" est un ALIAS du grant du
+// moteur hybride "hybridName" (même Config, même Enabled) — jamais une
+// mutation du compte d'origine (copie profonde de la map Grants).
+func aliasGrantForComponent(accounts []store.Account, hybridName, component string) []store.Account {
+	out := make([]store.Account, len(accounts))
+	for i, a := range accounts {
+		hg := a.Grants[hybridName]
+		if hg == nil {
+			out[i] = a
+			continue
+		}
+		aliased := *hg
+		aliased.Engine = component
+		newGrants := make(map[string]*store.EngineGrant, len(a.Grants)+1)
+		for k, v := range a.Grants {
+			newGrants[k] = v
+		}
+		newGrants[component] = &aliased
+		a.Grants = newGrants
+		out[i] = a
+	}
+	return out
 }
 
 // buildGroupedConfig construit la config serveur d'un moteur à partir de tous
@@ -451,6 +556,27 @@ func buildGroupedConfig(engineName string, accounts []store.Account, prof srvcfg
 
 	case store.EngineHysteria:
 		return hysteriaV2Config(accounts, prof)
+
+	case store.EngineHysteria2:
+		return hysteria2GroupedConfig(accounts, prof)
+
+	case store.EngineWireGuard:
+		return wireguardGroupedConfig(accounts, prof)
+
+	case store.EngineTUIC:
+		var users []tuicUser
+		for _, a := range accounts {
+			uuid := grantString(a, engineName, "uuid")
+			if uuid == "" {
+				continue
+			}
+			pw := grantString(a, engineName, "password")
+			if pw == "" {
+				pw = a.Password
+			}
+			users = append(users, tuicUser{uuid: uuid, password: pw})
+		}
+		return tuicGroupedConfig(users, prof)
 
 	case store.EngineUDP:
 		return marshal(map[string]any{
