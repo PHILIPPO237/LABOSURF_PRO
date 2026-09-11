@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"labosurf/internal/engine"
 	"labosurf/internal/srvcfg"
@@ -211,19 +212,45 @@ func readActiveConns() string {
 	return "N/D"
 }
 
-// accountSummary retourne les totaux de comptes (total / actifs) du store.
-func accountSummary() (total, active int) {
+// accountSummary retourne les totaux de comptes (total / actifs / expirés) du store.
+func accountSummary() (total, active, expired int) {
 	s, err := store.LoadStore(store.StorePath())
 	if err != nil {
-		return 0, 0
+		return 0, 0, 0
 	}
+	now := time.Now().UTC()
 	for _, a := range s.ListAccounts() {
 		total++
 		if a.Enabled {
 			active++
 		}
+		if a.ExpiresAt != "" {
+			if t, err := time.Parse(time.RFC3339, a.ExpiresAt); err == nil && now.After(t) {
+				expired++
+			}
+		}
 	}
-	return total, active
+	return total, active, expired
+}
+
+// licenseActivated indique si cette machine a un reçu d'activation de
+// licence local (voir internal/license : 1 clé = 1 installation).
+func licenseActivated() bool {
+	dir := os.Getenv("LABOSURF_DATA_DIR")
+	if dir == "" {
+		dir = "/etc/labosurf"
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		n := e.Name()
+		if !e.IsDir() && strings.HasPrefix(n, ".install_") && strings.HasSuffix(n, ".receipt") {
+			return true
+		}
+	}
+	return false
 }
 
 // networkAddress retourne l'adresse serveur configurée, ou détecte l'IP.
@@ -248,12 +275,29 @@ func padRight(s string, width int) string {
 // Robustesse : tout échec d'accès renvoie "N/D" sans bloquer.
 func printSystemPanel() {
 	prof, _ := srvcfg.Load()
-	total, active := accountSummary()
+	total, active, expired := accountSummary()
 
 	// Largeur de colonne pour 4 colonnes dans ~78 colonnes.
 	const cw = 18 // 2 indent + 4×18 + 3 séparateurs = 77
 
+	// Ligne de statut rapide (comptes/licence/connexions), à la manière
+	// d'un tableau de bord : puces colorées, un coup d'œil suffit.
+	licenceState := red("● non activée")
+	if licenseActivated() {
+		licenceState = green("● activée")
+	}
+	expiredState := dim(itoa(expired))
+	if expired > 0 {
+		expiredState = yellow(itoa(expired))
+	}
 	fmt.Println()
+	fmt.Println(
+		"  " + green("●") + " Comptes " + itoa(total) +
+			"   " + yellow("●") + " Expirés " + expiredState +
+			"   " + cyan("●") + " Connexions " + readActiveConns() +
+			"   " + "Licence " + licenceState,
+	)
+
 	fmt.Println(dim("  ── SYSTÈME ─────────────────────────────────────────"))
 
 	// 8 items système → 2 lignes de 4 colonnes.
