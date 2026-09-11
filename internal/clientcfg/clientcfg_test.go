@@ -45,6 +45,31 @@ func tempStore(t *testing.T) *store.Store {
 	return s
 }
 
+// setEngineDataDir isole le répertoire de données utilisé par les moteurs
+// (certificats/clés persistées : REALITY, secret d'obfuscation Hysteria2,
+// clé serveur WireGuard...) pour la durée du test.
+//
+// IMPORTANT : engineutil.DefaultDataDir est une variable de PACKAGE
+// initialisée UNE SEULE FOIS au chargement (EnvOr("LABOSURF_DATA_DIR",
+// "/etc/labosurf")) — un t.Setenv("LABOSURF_DATA_DIR", ...) après coup n'a
+// AUCUN EFFET dessus (contrairement à xray.RealityDir(), qui relit sa
+// variable d'environnement à CHAQUE appel). Ne jamais utiliser
+// t.Setenv("LABOSURF_DATA_DIR", ...) seul pour isoler un test qui passe par
+// engineutil.DefaultDataDir (hysteria2.EnsureObfsPassword,
+// wireguard.EnsureServerKeys...) : ça fonctionne par accident dans un
+// environnement local qui tourne en root (mkdir /etc/labosurf y réussit
+// silencieusement) mais échoue sur un runner CI non-root ("permission
+// denied") — bug réel découvert via l'échec du workflow de release
+// GitHub Actions, corrigé ici en réassignant directement la variable.
+func setEngineDataDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	orig := engineutil.DefaultDataDir
+	engineutil.DefaultDataDir = dir
+	t.Cleanup(func() { engineutil.DefaultDataDir = orig })
+	return dir
+}
+
 func prof(host string) srvcfg.Profile {
 	p := srvcfg.Default()
 	p.Host = host
@@ -240,7 +265,7 @@ func TestHysteriaPasswordDefault(t *testing.T) {
 // (schéma officiel) et que la config serveur générée porte bien l'utilisateur.
 func TestGenerateHysteria2Link(t *testing.T) {
 	s := tempStore(t)
-	t.Setenv("LABOSURF_DATA_DIR", t.TempDir())
+	setEngineDataDir(t)
 	s.CreateAccount(store.Account{ID: "hy1", Username: "iris", Enabled: true})
 	s.AddGrant("hy1", store.EngineHysteria2, map[string]any{"password": "sekret2"})
 	acc, _ := s.GetAccount("hy1")
@@ -272,7 +297,7 @@ func TestGenerateHysteria2Link(t *testing.T) {
 // du compte quand le grant n'en porte pas (même convention que Hysteria/TUIC).
 func TestGenerateHysteria2PasswordDefault(t *testing.T) {
 	s := tempStore(t)
-	t.Setenv("LABOSURF_DATA_DIR", t.TempDir())
+	setEngineDataDir(t)
 	s.CreateAccount(store.Account{ID: "hy2", Username: "jack", Enabled: true, Password: "fallbackpw2"})
 	s.AddGrant("hy2", store.EngineHysteria2, nil)
 	acc, _ := s.GetAccount("hy2")
@@ -291,7 +316,7 @@ func TestGenerateHysteria2PasswordDefault(t *testing.T) {
 // format JSON du moteur "hysteria" maison.
 func TestGroupedHysteria2(t *testing.T) {
 	s := tempStore(t)
-	t.Setenv("LABOSURF_DATA_DIR", t.TempDir())
+	setEngineDataDir(t)
 	s.CreateAccount(store.Account{ID: "hg1", Enabled: true})
 	s.CreateAccount(store.Account{ID: "hg2", Enabled: true})
 	s.AddGrant("hg1", store.EngineHysteria2, map[string]any{"password": "p1"})
@@ -323,7 +348,7 @@ func TestGroupedHysteria2(t *testing.T) {
 // et les AllowedIPs — jamais un pseudo-format (mission P2, Étape 9).
 func TestGenerateWireGuardClientConfig(t *testing.T) {
 	s := tempStore(t)
-	t.Setenv("LABOSURF_DATA_DIR", t.TempDir())
+	setEngineDataDir(t)
 	s.CreateAccount(store.Account{ID: "wgc1", Username: "karim", Enabled: true})
 	if _, err := s.AddGrant("wgc1", store.EngineWireGuard, nil); err != nil {
 		t.Fatalf("AddGrant: %v", err)
@@ -369,7 +394,7 @@ func TestGenerateWireGuardClientConfig(t *testing.T) {
 // placeholder silencieux.
 func TestGenerateWireGuardMissingSecretsErrors(t *testing.T) {
 	s := tempStore(t)
-	t.Setenv("LABOSURF_DATA_DIR", t.TempDir())
+	setEngineDataDir(t)
 	s.CreateAccount(store.Account{ID: "wgc2", Enabled: true})
 	s.AddGrant("wgc2", store.EngineWireGuard, nil) // pas d'EnsureEngineSecrets
 	acc, _ := s.GetAccount("wgc2")
@@ -384,7 +409,7 @@ func TestGenerateWireGuardMissingSecretsErrors(t *testing.T) {
 // adresse — jamais mélangés, jamais celle du serveur dans un bloc [Peer].
 func TestGroupedWireGuardMultiplePeers(t *testing.T) {
 	s := tempStore(t)
-	t.Setenv("LABOSURF_DATA_DIR", t.TempDir())
+	setEngineDataDir(t)
 	s.CreateAccount(store.Account{ID: "wgg1", Enabled: true})
 	s.CreateAccount(store.Account{ID: "wgg2", Enabled: true})
 	s.AddGrant("wgg1", store.EngineWireGuard, nil)
