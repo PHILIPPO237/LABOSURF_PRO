@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -18,6 +19,15 @@ import (
 	"labosurf/internal/srvcfg"
 	"labosurf/internal/store"
 )
+
+// ansiEscapeRE reconnaît les séquences SGR (couleurs) ANSI.
+var ansiEscapeRE = regexp.MustCompile("\x1b\\[[0-9;]*m")
+
+// visibleLen retourne la longueur affichée d'une chaîne, sans compter les
+// octets des séquences ANSI de couleur.
+func visibleLen(s string) int {
+	return len([]rune(ansiEscapeRE.ReplaceAllString(s, "")))
+}
 
 // readOSInfo retourne le nom du système d'exploitation (ex. Debian 12).
 func readOSInfo() string {
@@ -76,7 +86,7 @@ func readCPUBrand() string {
 			if i := strings.Index(line, ":"); i >= 0 {
 				v := strings.TrimSpace(line[i+1:])
 				if v != "" {
-					return v
+					return truncateEllipsis(v, 24)
 				}
 			}
 		}
@@ -262,12 +272,26 @@ func networkAddress() string {
 	return detectPublicIP()
 }
 
-// padRight complète une chaîne à largeur fixe sans tronquer trop vite.
-func padRight(s string, width int) string {
-	if len(s) >= width {
-		return s[:width]
+// truncateEllipsis coupe une chaîne à n runes et ajoute "…" si tronquée.
+// Utilisé pour les valeurs système à longueur imprévisible (ex. modèle CPU)
+// afin de préserver la mise en page en colonnes fixes du panneau.
+func truncateEllipsis(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
 	}
-	return s + strings.Repeat(" ", width-len(s))
+	return string(r[:n-1]) + "…"
+}
+
+// padRight complète une chaîne à largeur fixe (en colonnes visibles, pas en
+// octets bruts — une chaîne colorée ANSI ne doit jamais être tronquée en
+// plein milieu d'une séquence d'échappement, ce qui casserait l'affichage).
+func padRight(s string, width int) string {
+	vis := visibleLen(s)
+	if vis >= width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-vis)
 }
 
 // printSystemPanel affiche le panneau d'informations système + comptes +

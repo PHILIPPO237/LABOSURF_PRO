@@ -639,8 +639,10 @@ func (e *XrayCoreEngine) Uninstall() error {
 // Name returns the engine name
 func (e *XrayCoreEngine) Name() string { return "xray" }
 
-// Version returns the version
-func (e *XrayCoreEngine) Version() string { return e.version }
+// Version returns the version, without the leading "v" of the upstream
+// release tag — every other engine's Version() already omits it, and
+// callers (menu headers, dashboards) prepend their own "v".
+func (e *XrayCoreEngine) Version() string { return strings.TrimPrefix(e.version, "v") }
 
 // Description returns the description
 func (e *XrayCoreEngine) Description() string {

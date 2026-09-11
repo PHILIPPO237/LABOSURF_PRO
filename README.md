@@ -10,84 +10,19 @@ Dernière version stable : **v1.3.0** — <https://github.com/PHILIPPO237/LABOSU
 
 ## Aperçu
 
-Tout se pilote depuis un menu interactif en SSH (`menu` ou `labosurf`) — capture réelle du binaire, pas une maquette.
+Tout se pilote depuis un menu interactif en SSH (`menu` ou `labosurf`) — captures réelles du binaire, pas des maquettes. Chaque écran central affiche aussi un tableau de bord compact (comptes, licence, système, réseau, moteurs installés/ports) ; les valeurs ci-dessous viennent d'un environnement de développement, les vôtres refléteront votre propre VPS.
 
 **Menu principal :**
-```
-  ════════════════════════════════════════════════════════════════════════════════
 
-  ██╗      █████╗ ██████╗  ██████╗ ███████╗██╗   ██╗██████╗ ███████╗
-  ██║     ██╔══██╗██╔══██╗██╔═══██╗██╔════╝██║   ██║██╔══██╗██╔════╝
-  ██║     ███████║██████╔╝██║   ██║███████╗██║   ██║██████╔╝█████╗
-  ██║     ██╔══██║██╔══██╗██║   ██║╚════██║██║   ██║██╔══██╗██╔══╝
-  ███████╗██║  ██║██████╔╝╚██████╔╝███████║╚██████╔╝██║  ██║██║
-  ╚══════╝╚═╝  ╚═╝╚═════╝  ╚═════╝ ╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚═╝
-
-  ════════════════════════════════════════════════════════════════════════════════
-  LABORATOIRE DU FREESURF  •  CONÇU PAR PHILIPPO237  •  MULTI-MOTEURS
-  ════════════════════════════════════════════════════════════════════════════════
-
-  ── MENU CENTRAL ──────────────────────────────────────
-
-  1 🔧 GESTION DES MOTEURS
-      Installez, démarrez, arrêtez et configurez chaque moteur VPN.
-  2 👥 GESTION DES UTILISATEURS
-      Comptes, durées, blocages — rattachés à un ou plusieurs moteurs.
-  3 🖥️  ÉTAT GLOBAL
-      Récapitulatif de tous les moteurs (installés / en cours).
-  4 ⚙️  PROFIL SERVEUR
-      IP publique, domaines et ports par moteur (configs serveur + client).
-  9 ℹ️ À PROPOS
-  0 ❌ QUITTER
-
-  LABOSURF PRO ► Choisissez une option :
-```
+![Menu principal LABOSURF PRO](docs/screenshots/menu-principal.png)
 
 **Sous-menu « Gestion des moteurs » (option 1) :**
-```
-  ── 🔧 GESTION DES MOTEURS ────────────────────────────
 
-  [1] dnstt        ○ installé
-  [2] hysteria     ○ installé
-  [3] hysteria2    · non installé
-  [4] slowdns      ○ installé
-  [5] ssh          ○ installé
-  [6] tuic         · non installé
-  [7] udp          · non installé
-  [8] wireguard    · non installé
-  [9] xray         · non installé
-  [C] 🧩 CRÉER UN MOTEUR HYBRIDE
-      Composer soi-même un hybride à partir des moteurs principaux.
-  [D] 🗑️  RETIRER UN MOTEUR HYBRIDE
-      Supprimer un hybride précédemment composé.
-  [0] 🔙 RETOUR
-
-  LABOSURF PRO ► Moteur à gérer :
-```
+![Gestion des moteurs](docs/screenshots/gestion-moteurs.png)
 
 **Sous-menu d'un moteur (ex. Xray) :**
-```
-  ── MOTEUR xray (v26.3.27) ────────────────────────────────────
 
-  État : · non installé
-
-  1 📥 INSTALLER
-      Télécharger + déployer le moteur tierce (SHA-256 vérifié).
-  2 ⚙️  CONFIGURER
-      Appliquer un fichier de configuration au moteur.
-  3 ▶️  DÉMARRER
-  4 ⏹  ARRÊTER
-  5 🔄 REDÉMARRER
-  6 🖥️  ÉTAT DÉTAILLÉ
-  7 💬 JOURNAUX
-  8 🚀 MISE À JOUR
-  9 🗑️  DÉSINSTALLER
-  0 🔙 RETOUR
-
-  LABOSURF PRO ► Option :
-```
-
-Chaque écran affiche aussi, au-dessus du menu, un tableau de bord compact (système, réseau, moteurs installés/ports) — omis ici par souci de lisibilité, ses valeurs dépendant entièrement de votre VPS.
+![Sous-menu du moteur Xray](docs/screenshots/moteur-xray.png)
 
 ## Moteurs disponibles
 
