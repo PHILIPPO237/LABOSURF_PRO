@@ -118,7 +118,12 @@ func loadHysteriaConfig(path string) (HysteriaConfig, error) {
 	}
 	var cfg HysteriaConfig
 	if err := json.Unmarshal(raw, &cfg); err != nil {
-		return HysteriaConfig{}, fmt.Errorf("config Hysteria invalide : %w", err)
+		// Même tolérance que Configure : une config YAML émisé par la
+		// plateforme (hysteriaV2Config) doit pouvoir démarrer le moteur.
+		cfg, err = parseConfigYAML(raw)
+		if err != nil {
+			return HysteriaConfig{}, fmt.Errorf("config Hysteria illisible (ni JSON ni YAML toléré) : %w", err)
+		}
 	}
 	if cfg.Port <= 0 {
 		cfg.Port = defaultHysteriaPort

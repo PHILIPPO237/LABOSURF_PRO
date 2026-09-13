@@ -75,7 +75,7 @@ func Generate(acc store.Account, engineName string, prof srvcfg.Profile) (Client
 			return ClientResult{}, err
 		}
 		res.ClientLink = link
-		res.ServerConfig = xrayServerConfig(acc, uuid)
+		res.ServerConfig = xrayServerConfig(acc, uuid, port)
 
 	case store.EngineHysteria:
 		pw := grantString(acc, store.EngineHysteria, "password")
@@ -194,7 +194,11 @@ func udpServerConfig(acc store.Account, port int) []byte {
 }
 
 // xrayServerConfig produit la config serveur Xray-core (format JSON officiel).
-func xrayServerConfig(acc store.Account, uuid string) []byte {
+// port est celui réellement composé par le lien client (profil serveur) —
+// la config doit écouter exactement ce port, sinon le client ne joint jamais
+// l'inbound malgré un lien valide (incohérence corrigée : le port était
+// auparavant codé en dur à 443 quelle que soit l'écoute du profil).
+func xrayServerConfig(acc store.Account, uuid string, port int) []byte {
 	flow := "xtls-rprx-vision"
 	if f := grantString(acc, store.EngineXray, "flow"); f != "" {
 		flow = f
@@ -206,7 +210,7 @@ func xrayServerConfig(acc store.Account, uuid string) []byte {
 		},
 		"inbounds": []any{
 			map[string]any{
-				"port":     443,
+				"port":     port,
 				"protocol": "vless",
 				"settings": map[string]any{
 					"clients": []any{
@@ -279,11 +283,15 @@ func hysteriaServerConfig(acc store.Account, password string) []byte {
 }
 
 // dnsTunnelServerConfig produit une config minimale pour slowdns/dnstt.
+// jitter_ms est activé par défaut (40 ms) : c'est le paramètre anti-DPI des
+// serveurs de tunnel (engines/slowdns, engines/dnstt) — la latence moyenne
+// ajoutée (~20 ms) est négligeable face à la discrétion gagnée.
 func dnsTunnelServerConfig(acc store.Account, engineName, domain string) []byte {
 	s := map[string]any{
-		"domain": domain,
-		"port":   53,
-		"user":   acc.ID,
+		"domain":   domain,
+		"port":     53,
+		"user":     acc.ID,
+		"jitter_ms": 40,
 	}
 	return marshal(s)
 }
@@ -506,7 +514,7 @@ func buildGroupedConfig(engineName string, accounts []store.Account, prof srvcfg
 			},
 			"inbounds": []any{
 				map[string]any{
-					"port":     443,
+					"port":     prof.Port(store.EngineXray),
 					"protocol": "vless",
 					"settings": map[string]any{
 						"clients":      clients,
@@ -599,6 +607,8 @@ func buildGroupedConfig(engineName string, accounts []store.Account, prof srvcfg
 			"engine": engineName,
 			"domain": domain,
 			"port":   53,
+			// jitter_ms anti-DPI activé par défaut (voir dnsTunnelServerConfig).
+			"jitter_ms": 40,
 			"users":  users,
 		})
 

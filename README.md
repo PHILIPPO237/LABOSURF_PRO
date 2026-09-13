@@ -37,8 +37,41 @@ Tout se pilote depuis un menu interactif en SSH (`menu` ou `labosurf`) — captu
 | **SlowDNS** | DNS Tunnel | 53/UDP | Transport | Tunnel DNS sur UDP (auth Ed25519, backend TCP) |
 | **DNSTT** | DNS Tunnel | 53/UDP | Transport | Tunnel DNS quasi-indétectable (sessions, fragmentation) |
 | **SSH** | SSH | 22/TCP | Accès | Serveur SSH natif (auth Ed25519, shell non-root) |
+| **Freeway-Gate** | HTTP proxy (CONNECT) | 8080/TCP | Proxy | Reverse proxy zero-rating multi-opérateur (MTN Free Basics + Orange Maxit), chaînage CONNECT côté serveur, injection d'en-têtes, rate limit, health |
 
 Chaque moteur est un **binaire autonome** (`labosurf-<moteur>`), déployé et supervisé par son propre service systemd — voir [Gestion des moteurs](#gestion-des-moteurs).
+
+### Freeway-Gate — exploitation zero-rating côté serveur
+
+Le moteur **Freeway-Gate** (installable via `labosurf-pro.sh`, sélection `freewaygate`)
+déploie et supervise le binaire `freeway-gate` (dépôt
+[PHILIPPO237/freeway-gate](https://github.com/PHILIPPO237/freeway-gate)) : reverse
+proxy qui exploite les passerelles zero-rating des opérateurs pour transporter
+un flux sans être débité. Le workflow d'exploitation complet :
+
+1. **Publier la release freeway-gate** : le moteur télécharge
+   `freeway-gate-linux-<arch>` depuis `https://github.com/PHILIPPO237/freeway-gate/releases/download/v0.1.0/`
+   et refuse tout binaire dont le SHA-256 ne correspond pas aux empreintes
+   épinglées (`engines/freewaygate/binary.go`).
+2. **Détecter les relais depuis le réseau opérateur** (data OFF) : utiliser
+   `tools/probe-zerorating.py` du dépôt freeway-gate (menu → option **7**) qui
+   exporte un bloc `"chains": [...]` de relais CONNECT réellement utilisables.
+3. **Configurer le moteur** : écrire/remplacer
+   `/etc/labosurf/engines/freeway-gate/config.json` depuis `config.example.json`
+   en collant la liste `chains` exportée (profil `mtn` et/ou `orange`).
+4. **Démarrer** le service : `systemctl restart labosurf-freewaygate`, puis
+   vérifier `/health` (supervisé par `labosurf-freewaygate health`).
+
+Le client joint le serveur par un domaine **derrière Cloudflare en orange-cloud**
+(`proxy-mtn.*`/`proxy-orange.*`, certificat Universal SSL gratuit) : la plage
+d'IP Cloudflare étant zero-rated côté opérateur, la jambe client est gratuite
+elle aussi — **aucun Worker « open-proxy » exposé**, contrairement à l'approche
+précédente abandonnée.
+
+> ⚠️ **Port 8080** : le portail HTTP LABOSURF (`portal.listen :8080`) et
+> freeway-gate partagent la même valeur par défaut. Si les deux sont actifs,
+> changer `listen` dans le `config.json` de freeway-gate (ex. `127.0.0.1:9080`) et
+> reporter ce port dans la config Nginx/Cloudflare en amont.
 
 ### Moteurs hybrides (Transport + Backend)
 
@@ -92,6 +125,8 @@ Aucune installation locale sur le téléphone n'est nécessaire.
 
 Détails pour le cas B : `systemd` n'est activé par défaut sur aucune distribution WSL (nécessite `[boot] systemd=true` dans `/etc/wsl.conf`, disponible seulement sur WSL récent) ; le réseau WSL2 est NAT par défaut, donc un VPN "serveur" tournant dans WSL n'est pas directement joignable depuis Internet sans redirection de ports côté Windows ; le support de `/dev/net/tun` dépend du noyau WSL2 utilisé. **Ne pas utiliser WSL comme substitut à un vrai VPS pour un déploiement réel.**
 
+> **Compilation Go en Windows natif : impossible sur tout le projet.** Le moteur SSH utilise `syscall.Credential` (`engines/ssh/server.go`), un type Unix-only : `go build ./...` et `go test ./internal/...` échouent sous `GOOS=windows` (moteur SSH et ses dépendances : `cmd/labosurf`, `cmd/labosurf-ssh`, `internal/clientcfg`, `internal/engineutil`). C'est un état prévu et sans conséquences sur la cible réelle (Linux/VPS), mais **la compilation/tests doivent se faire sous WSL/Linux ou via la CI** — d'où la recommandation du cas A.
+
 ## Prérequis
 
 - VPS ou machine Linux avec accès `root`/`sudo`
@@ -123,7 +158,7 @@ L'installateur exécute 11 étapes numérotées :
 
 L'installateur ouvre automatiquement, via `iptables` (ou `nft` en secours si `iptables` est absent) :
 - **5667/UDP** (moteur UDP natif)
-- **8080/TCP** (portail HTTP intégré)
+- **8080/TCP** (portail HTTP intégré — également utilisé par le moteur **Freeway-Gate** côté loopback derrière Nginx ; voir [Freeway-Gate — exploitation zero-rating](#freeway-gate--exploitation-zero-rating-côté-serveur) pour le conflit de port éventuel)
 
 **Il n'ouvre pas automatiquement** les ports des autres moteurs (443/TCP Xray, 8443/UDP Hysteria, 443/UDP TUIC, 443/UDP Hysteria2, 51820/UDP WireGuard, 53/UDP SlowDNS/DNSTT, 22/TCP SSH). Si un firewall applicatif (`ufw`, groupe de sécurité cloud, etc.) bloque ces ports par défaut, vous devez les ouvrir manuellement pour chaque moteur installé.
 
@@ -144,7 +179,7 @@ Depuis Android, le résultat est identique avec **Termius** (ou tout autre clien
 
 ## Gestion des moteurs
 
-Chaque moteur installé (`labosurf-xray`, `labosurf-hysteria`, `labosurf-tuic`, `labosurf-hysteria2`, `labosurf-wireguard`, `labosurf-slowdns`, `labosurf-dnstt`, `labosurf-ssh`, `labosurf-udp`) tourne comme **service systemd indépendant** :
+Chaque moteur installé (`labosurf-xray`, `labosurf-hysteria`, `labosurf-tuic`, `labosurf-hysteria2`, `labosurf-wireguard`, `labosurf-slowdns`, `labosurf-dnstt`, `labosurf-ssh`, `labosurf-udp`, `labosurf-freewaygate`) tourne comme **service systemd indépendant** :
 
 ```bash
 # Via systemd (méthode recommandée après installation)

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	mrand "math/rand"
 	"net"
 	"os"
 	"strings"
@@ -29,6 +30,12 @@ type DNSTTConfig struct {
 	Port    int          `json:"port"`
 	Backend string       `json:"backend"`
 	Users   []DNSTTUser  `json:"users"`
+
+	// JitterMs : délai aléatoire maximal (millisecondes) appliqué avant
+	// chaque réponse ACK, pour décorréler le rythme des échanges DNS et
+	// rester sous les seuils de détection des DPI. 0 = pas de jitter
+	// (comportement historique). Valeur recommandée : 30-80 ms.
+	JitterMs int `json:"jitter_ms,omitempty"`
 }
 
 type DNSTTUser struct {
@@ -234,7 +241,21 @@ func (s *DNSTTServer) handleQuery(query []byte, remoteAddr *net.UDPAddr) {
 
 	ack := make([]byte, headerLen)
 	copy(ack, data[:headerLen])
+	time.Sleep(jitterDelay(s.config.JitterMs))
 	s.sendDNSResponse(query, ack, remoteAddr)
+}
+
+// jitterDelay retourne un délai uniformément aléatoire dans [0, maxMs]
+// millisecondes, appliqué avant chaque réponse DNS lorsque le serveur est
+// configuré avec jitter_ms > 0. Un rythme de réponses trop régulier est le
+// premier signal que les DPI utilisent pour identifier un tunnel DNS ; la
+// variance aléatoire maintient le trafic sous ce seuil. maxMs <= 0 (valeur
+// par défaut) préserve le comportement historique : aucune latence ajoutée.
+func jitterDelay(maxMs int) time.Duration {
+	if maxMs <= 0 {
+		return 0
+	}
+	return time.Duration(mrand.Intn(maxMs+1)) * time.Millisecond
 }
 
 func (s *DNSTTServer) backendLoop(sess *DNSTTSession, remoteAddr *net.UDPAddr) {

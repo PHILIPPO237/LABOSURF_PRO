@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	mrand "math/rand"
 	"net"
 	"strings"
 	"sync"
@@ -188,9 +189,16 @@ func (s *SlowDNSServer) handleDNSQuery(query []byte, remoteAddr *net.UDPAddr) {
 	s.mu.RUnlock()
 
 	if !exists {
-		// Nouvelle session : vérifier la signature avec la clé publique de l'utilisateur
-		user, pubKey := s.findUserBySessionID(sessionID)
-		if user == "" || pubKey == nil || !ed25519.Verify(pubKey, payload, signature) {
+		// Nouvelle session : la signature ed25519 doit être vérifiée avec la
+		// clé publique de l'utilisateur QUI L'A SIGNÉE (findUserBySignature
+		// itère sur les clés activées et ne retourne que celle qui valide la
+		// signature). Contrairement à une version antérieure qui acceptait
+		// les 16 premiers octets comme preuve suffisante avec la PREMIÈRE
+		// clé activée de la config, quel que soit le signataire réel — ce
+		// qui permettait à tout client muni d'une clé valide de se faire
+		// passer pour n'importe quel utilisateur.
+		user, pubKey := s.findUserBySignature(payload, signature)
+		if user == "" || pubKey == nil {
 			s.sendNXDOMAIN(query, remoteAddr)
 			return
 		}
@@ -255,9 +263,23 @@ func (s *SlowDNSServer) handleDNSQuery(query []byte, remoteAddr *net.UDPAddr) {
 		log.Printf("SlowDNS : construction de la réponse échouée pour %s", sessionID)
 		return
 	}
+	time.Sleep(jitterDelay(s.config.JitterMs))
 	if _, err := s.conn.WriteToUDP(resp, remoteAddr); err != nil {
 		log.Printf("SlowDNS : erreur envoi réponse à %s : %v", remoteAddr, err)
 	}
+}
+
+// jitterDelay retourne un délai uniformément aléatoire dans [0, maxMs]
+// millisecondes, appliqué avant chaque réponse DNS lorsque le serveur est
+// configuré avec jitter_ms > 0. Un rythme de réponses trop régulier est le
+// premier signal que les DPI utilisent pour identifier un tunnel DNS ; la
+// variance aléatoire maintient le trafic sous ce seuil. maxMs <= 0 (valeur
+// par défaut) préserve le comportement historique : aucune latence ajoutée.
+func jitterDelay(maxMs int) time.Duration {
+	if maxMs <= 0 {
+		return 0
+	}
+	return time.Duration(mrand.Intn(maxMs+1)) * time.Millisecond
 }
 
 // backendLoop lit en continu les données que le backend TCP renvoie
@@ -306,23 +328,25 @@ func (sess *SlowDNSSession) drainPendingOut() []byte {
 	return chunk
 }
 
-func (s *SlowDNSServer) findUserBySessionID(sessionID string) (string, ed25519.PublicKey) {
-	// Le sessionID est les 16 premiers bytes encodés en hex (32 chars)
-	// On cherche l'utilisateur dont la clé publique correspond
+// findUserBySignature retourne (utilisateur, clé publique) de l'utilisateur
+// activé dont la clé publique VERIFIE réellement la signature ed25519 du
+// message donné — jamais "le premier utilisateur activé" indépendamment du
+// signataire (anti-pattern corrigé ici, voir handleDNSQuery). C'est la même
+// discipline que engines/dnstt (findUserBySessionSignature) : seul le
+// détenteur de la clé privée correspondante peut créer une session.
+func (s *SlowDNSServer) findUserBySignature(msg, signature []byte) (string, ed25519.PublicKey) {
 	for _, u := range s.config.Users {
 		if !u.Enabled {
 			continue
 		}
 		pubKeyBytes, err := hex.DecodeString(u.PublicKey)
-		if err != nil {
+		if err != nil || len(pubKeyBytes) != ed25519.PublicKeySize {
 			continue
 		}
-		if len(pubKeyBytes) != ed25519.PublicKeySize {
-			continue
+		pub := ed25519.PublicKey(pubKeyBytes)
+		if ed25519.Verify(pub, msg, signature) {
+			return u.User, pub
 		}
-		// Pour simplifier, on accepte le premier utilisateur valide
-		// Dans un vrai déploiement, le sessionID serait dérivé de la clé publique
-		return u.User, ed25519.PublicKey(pubKeyBytes)
 	}
 	return "", nil
 }

@@ -6,6 +6,8 @@ package hysteria
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -57,26 +59,44 @@ func (e *HysteriaEngineWrapper) Configure(ctx context.Context, cfg engine.Engine
 		return fmt.Errorf("configuration Hysteria vide")
 	}
 
-	var raw map[string]any
-	if err := json.Unmarshal(cfg.JSON, &raw); err != nil {
+	cfgJSON, err := e.resolveConfig(cfg.JSON)
+	if err != nil {
 		return err
+	}
+	if cfgJSON.Obfs == "" {
+		cfgJSON.Obfs = randomObfs()
+	}
+	return e.writeConfig(cfgJSON)
+}
+
+// resolveConfig accepte le JSON historique du moteur (port/obfs/users/
+// backend) ET le YAML émis par la plateforme (voir parseConfigYAML). Sans
+// la forme YAML, l'application de la config groupée échouait toujours.
+func (e *HysteriaEngineWrapper) resolveConfig(raw []byte) (HysteriaConfig, error) {
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return parseConfigYAML(raw)
 	}
 
 	port := 8443
-	if p, ok := raw["port"].(float64); ok && int(p) > 0 {
+	if p, ok := m["port"].(float64); ok && int(p) > 0 {
 		port = int(p)
 	}
 
 	var obfs string
-	if o, ok := raw["obfs"].(string); ok {
+	if o, ok := m["obfs"].(string); ok {
 		obfs = o
 	}
 	if obfs == "" {
-		obfs = "labosurf"
+		// Plus jamais de secret statique par défaut : "labosurf" servait de
+		// XOR-key stacké sur le fil (magic bytes + première partie des
+		// paquets), c'était une signature reconnaissable pour tout DPI. Un
+		// secret aléatoire par machine rend le trafic indistinct.
+		obfs = randomObfs()
 	}
 
 	var users []HysteriaUser
-	if auth, ok := raw["auth"].(map[string]any); ok {
+	if auth, ok := m["auth"].(map[string]any); ok {
 		if userpass, ok := auth["userpass"].(map[string]any); ok {
 			for name, pw := range userpass {
 				if pws, ok := pw.(string); ok && pws != "" {
@@ -88,7 +108,7 @@ func (e *HysteriaEngineWrapper) Configure(ctx context.Context, cfg engine.Engine
 			users = append(users, HysteriaUser{Name: "default", Password: pw, Enabled: true})
 		}
 	}
-	if usersList, ok := raw["users"].([]any); ok {
+	if usersList, ok := m["users"].([]any); ok {
 		for _, u := range usersList {
 			um, ok := u.(map[string]any)
 			if !ok {
@@ -108,12 +128,10 @@ func (e *HysteriaEngineWrapper) Configure(ctx context.Context, cfg engine.Engine
 		}
 	}
 
-	cfgJSON := HysteriaConfig{
-		Port:  port,
-		Obfs:  obfs,
-		Users: users,
-	}
+	return HysteriaConfig{Port: port, Obfs: obfs, Users: users}, nil
+}
 
+func (e *HysteriaEngineWrapper) writeConfig(cfgJSON HysteriaConfig) error {
 	out, err := json.MarshalIndent(cfgJSON, "", "  ")
 	if err != nil {
 		return err
@@ -244,4 +262,15 @@ func (e *HysteriaEngineWrapper) Uninstall() error {
 
 func init() {
 	engine.Register(engineName, New)
+}
+
+// randomObfs génère un secret d'obfuscation aléatoire (32 octets en hex).
+// Remplace l'ancien défaut statique : un xor-key constant sur le fil est le
+// premier octet qu'un DPI peut reconnaître, quelle que soit la charge utile.
+func randomObfs() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return hex.EncodeToString([]byte("labosurf-rotation-fallback"))
+	}
+	return hex.EncodeToString(b)
 }

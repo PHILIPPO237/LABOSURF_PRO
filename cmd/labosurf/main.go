@@ -15,6 +15,7 @@ import (
 
 	// Imports d'enregistrement (init) des moteurs dans le registre.
 	_ "labosurf/engines/dnstt"
+	_ "labosurf/engines/freewaygate"
 	_ "labosurf/engines/hysteria"
 	_ "labosurf/engines/hysteria2"
 	_ "labosurf/engines/slowdns"

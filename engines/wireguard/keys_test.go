@@ -2,6 +2,7 @@ package wireguard
 
 import (
 	"os"
+	"runtime"
 	"testing"
 )
 
@@ -43,6 +44,15 @@ func TestEnsureServerKeysPersists(t *testing.T) {
 // TestServerKeyFilePermissions vérifie que le fichier de clé privée n'est
 // jamais lisible que par son propriétaire (mission P2, Étape 15).
 func TestServerKeyFilePermissions(t *testing.T) {
+	// La sémantique POSIX des bits 0600 n'existe pas sur Windows (la seule
+	// ACL présentée par os.Stat est "tout le monde" vu depuis Go) ; le dur-
+	// cissement 0600 est appliqué par os.WriteFile sur les cibles Linux/VPS
+	// réelles, couvertes par ce test. Échec systématique et non informatif
+	// sur Windows natif : on saute explicitement, hors masquage de défaut
+	// (le reste du paquet de tests continue de tourner).
+	if runtime.GOOS == "windows" {
+		t.Skip("sémantique POSIX 0600 non applicable sur Windows (cible de production : Linux/VPS)")
+	}
 	dir := t.TempDir()
 	if _, _, err := EnsureServerKeys(dir); err != nil {
 		t.Fatalf("EnsureServerKeys: %v", err)

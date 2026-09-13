@@ -25,6 +25,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -66,6 +67,9 @@ func isGoModule(dir string) bool {
 func buildLicenseMaker(t *testing.T, sourceDir string) string {
 	t.Helper()
 	out := filepath.Join(t.TempDir(), "license-maker-under-test")
+	if runtime.GOOS == "windows" {
+		out += ".exe"
+	}
 	cmd := exec.Command("go", "build", "-o", out, ".")
 	cmd.Dir = sourceDir
 	if output, err := cmd.CombinedOutput(); err != nil {

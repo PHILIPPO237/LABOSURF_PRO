@@ -20,9 +20,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"labosurf/internal/engine"
@@ -82,7 +84,7 @@ func (e *FreewayGateEngine) Install(ctx context.Context, cfg engine.InstallConfi
 		return err
 	}
 	configPath := filepath.Join(dataDir, "config.json")
-	if err := os.WriteFile(configPath, []byte(DefaultConfigJSON), 0o644); err != nil {
+	if err := os.WriteFile(configPath, []byte(DefaultConfigJSON), 0o600); err != nil {
 		return err
 	}
 	binaryPath, err := installBinary(ctx, binaryDir)
@@ -111,39 +113,98 @@ func (e *FreewayGateEngine) Configure(_ context.Context, cfg engine.EngineConfig
 	if len(data) == 0 {
 		data = []byte(DefaultConfigJSON)
 	}
+	if !json.Valid(data) {
+		return fmt.Errorf("configuration freeway-gate : JSON invalide")
+	}
 	if err := os.MkdirAll(filepath.Dir(e.configPath), 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(e.configPath, data, 0o644); err != nil {
+	if err := os.WriteFile(e.configPath, data, 0o600); err != nil {
 		return err
 	}
 	e.listen = listenFromData(data)
 	return nil
 }
 
-// Start démarre freeway-gate (bloquant jusqu'à l'arrêt).
+// Start démarre freeway-gate de façon NON bloquante : le binaire tourne en
+// goroutine, et Start rend la main dès que le process tient (ou après une
+// grâce anti-échec immédiat), en signalant une sortie immédiate (config
+// invalide, port déjà pris…) comme une erreur — jamais un silence.
 func (e *FreewayGateEngine) Start(ctx context.Context) error {
 	e.mu.Lock()
 	if e.cmd != nil {
 		e.mu.Unlock()
 		return nil
 	}
-	ctx, cancel := context.WithCancel(ctx)
-	e.cancel = cancel
-	e.done = make(chan error, 1)
-	cmd := exec.CommandContext(ctx, e.binaryPath, "-config", e.configPath)
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	cmd := exec.CommandContext(runCtx, e.binaryPath, "-config", e.configPath)
 	cmd.Stdout = e.logs
 	cmd.Stderr = e.logs
 	e.cmd = cmd
+	e.cancel = cancel
+	e.done = done
 	e.mu.Unlock()
 
-	err := cmd.Run()
-	e.mu.Lock()
-	done := e.done
-	e.cmd = nil
-	e.mu.Unlock()
-	done <- err
-	return err
+	go func() {
+		done <- cmd.Run()
+		e.mu.Lock()
+		if e.cmd == cmd {
+			e.cmd = nil
+		}
+		e.mu.Unlock()
+	}()
+
+	// Grâce anti-échec immédiat : sur un hôte lent (WSL, charge), le process
+	// peut mettre un peu plus de 500 ms à être planifié avant de mourir. Au
+	// lieu d'un sleep fixe, on sonde la sortie réelle (done) et la vie du
+	// process ; le vrai signal de santé, en exploitation, reste les sondes
+	// Endpoint()/HealthCheck().
+	startFail := func(err error) error {
+		e.mu.Lock()
+		e.cmd = nil
+		e.mu.Unlock()
+		return fmt.Errorf("freeway-gate s'est arrêté immédiatement: %w", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-done:
+			return startFail(err)
+		default:
+		}
+		e.mu.Lock()
+		pid := 0
+		if e.cmd == cmd && cmd.Process != nil {
+			pid = cmd.Process.Pid
+		}
+		e.mu.Unlock()
+		if pid > 0 && !processAlive(pid) {
+			select {
+			case err := <-done:
+				return startFail(err)
+			case <-time.After(2 * time.Second):
+				return startFail(fmt.Errorf("process %d mort (sortie non collectée)", pid))
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return nil
+}
+
+// processAlive rapporte si le process est encore dans la table des process
+// (signal 0 POSIX : jamais de signal envoyé, juste un test d'existence).
+// Sur Windows la sémantique du signal 0 n'existe pas : on s'appuie alors
+// uniquement sur done, position conservative (jamais de faux négatif).
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	if runtime.GOOS == "windows" {
+		return true
+	}
+	err := syscall.Kill(pid, syscall.Signal(0))
+	return err == nil || err == syscall.EPERM
 }
 
 // RunForeground lance le moteur en avant-plan (systemd Type=simple).
@@ -151,23 +212,24 @@ func (e *FreewayGateEngine) RunForeground(ctx context.Context) error {
 	return e.Start(ctx)
 }
 
-// Stop arrête freeway-gate.
+// Stop arrête freeway-gate : annulation du contexte (SIGKILL via
+// exec.CommandContext) après une courte attente gracieuse.
 func (e *FreewayGateEngine) Stop() error {
 	e.mu.Lock()
 	cancel := e.cancel
 	cmd := e.cmd
 	done := e.done
 	e.mu.Unlock()
-	if cmd != nil && cmd.Process != nil {
-		_ = cmd.Process.Kill()
-	}
+
 	if cancel != nil {
 		cancel()
-		if done != nil {
-			select {
-			case <-done:
-			case <-time.After(5 * time.Second):
-			}
+	}
+	if cmd != nil && cmd.Process != nil {
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			_ = cmd.Process.Kill()
+			<-done
 		}
 	}
 	return nil
@@ -216,7 +278,8 @@ func (e *FreewayGateEngine) Status() engine.EngineStatus {
 	return st
 }
 
-// HealthCheck vérifie que le moteur est opérationnel via /health.
+// HealthCheck vérifie que le moteur est opérationnel via /health, avec un
+// timeout explicite (jamais http.Get sans limite).
 func (e *FreewayGateEngine) HealthCheck() error {
 	e.mu.Lock()
 	addr := e.listen
@@ -224,7 +287,8 @@ func (e *FreewayGateEngine) HealthCheck() error {
 		addr = "127.0.0.1:8080"
 	}
 	e.mu.Unlock()
-	resp, err := http.Get("http://" + addr + "/health")
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("http://" + addr + "/health")
 	if err != nil {
 		return err
 	}
@@ -255,7 +319,8 @@ func (e *FreewayGateEngine) Update() error {
 	return nil
 }
 
-// Uninstall supprime le binaire et la configuration du moteur.
+// Uninstall supprime le binaire et le fichier de configuration du moteur
+// (jamais le répertoire parent, qui peut contenir d'autres données).
 func (e *FreewayGateEngine) Uninstall() error {
 	e.mu.Lock()
 	binaryPath := e.binaryPath
@@ -266,19 +331,32 @@ func (e *FreewayGateEngine) Uninstall() error {
 		_ = os.Remove(binaryPath)
 	}
 	if configPath != "" {
-		_ = os.Remove(filepath.Dir(configPath)) // répertoire de config du moteur
+		_ = os.Remove(configPath)
 	}
 	return nil
 }
 
-// Endpoint expose l'adresse d'écoute du moteur (implémente engine.Endpointer).
+// Endpoint expose l'adresse d'écoute du moteur (implémente engine.Endpointer),
+// mais ne la déclare prête qu'après une VRAIE tentative de connexion TCP sur
+// l'adresse configurée — jamais une déduction optimiste basée sur la seule
+// présence du process.
 func (e *FreewayGateEngine) Endpoint() (engine.Endpoint, bool) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.cmd == nil || e.cmd.Process == nil {
+	cmd := e.cmd
+	addr := e.listen
+	e.mu.Unlock()
+	if cmd == nil || cmd.Process == nil {
 		return engine.Endpoint{}, false
 	}
-	return engine.Endpoint{Network: "tcp", Addr: e.listen}, true
+	if addr == "" {
+		addr = "127.0.0.1:8080"
+	}
+	conn, err := net.DialTimeout("tcp", addr, 300*time.Millisecond)
+	if err != nil {
+		return engine.Endpoint{}, false
+	}
+	conn.Close()
+	return engine.Endpoint{Network: "tcp", Addr: addr}, true
 }
 
 // logRing est un tampon circulaire des sorties du binaire.
@@ -364,8 +442,8 @@ func listenFromData(data []byte) string {
 const DefaultConfigJSON = `{
   "listen": "127.0.0.1:8080",
   "hosts": {
-    "mtn": ["mtn.proxy.", "mtn."],
-    "orange": ["orange.proxy.", "orange."]
+    "mtn": ["proxy-mtn.", "mtn."],
+    "orange": ["proxy-orange.", "orange."]
   },
   "profiles": {
     "mtn": {

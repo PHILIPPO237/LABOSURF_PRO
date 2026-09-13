@@ -19,6 +19,13 @@ type SlowDNSConfig struct {
 	Port    int            `json:"port"`
 	Backend string         `json:"backend"`
 	Users   []SlowDNSUser  `json:"users"`
+
+	// JitterMs : délai aléatoire maximal (millisecondes) appliqué avant
+	// chaque réponse DNS, pour décorréler le rythme des échanges et rester
+	// sous les seuils de détection des DPI qui bloquent les tunnels DNS au
+	// débit/rythme trop régulier. 0 = pas de jitter (comportement
+	// historique). Valeur recommandée : 30-80 ms.
+	JitterMs int `json:"jitter_ms,omitempty"`
 }
 
 type SlowDNSUser struct {
