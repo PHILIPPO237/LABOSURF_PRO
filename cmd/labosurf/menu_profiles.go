@@ -268,6 +268,12 @@ func preFillParams(engineName string) map[string]string {
 	// Paramètres spécifiques selon le moteur depuis l'engcfg persisté.
 	switch engineName {
 	case store.EngineSlowDNS, store.EngineDNSTT:
+		// Domaine DNS délégué : lu depuis srvcfg (source la plus fiable).
+		// Sans ce pré-remplissage, BuildConfig utiliserait "tunnel.example.com"
+		// (placeholder fictif) si l'opérateur n'édite pas le paramètre.
+		if prof, err := srvcfg.Load(); err == nil && len(prof.Domains) > 0 {
+			params["domain"] = prof.Domains[0]
+		}
 		if v := ep.Get("backend", ""); v != "" {
 			params["backend"] = v
 		}
