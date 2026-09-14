@@ -3,8 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
+	"net"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 
 	"labosurf/internal/engine"
 	"labosurf/internal/store"
@@ -21,12 +25,14 @@ type UDPServerEngine struct {
 	store  *store.Store
 	cancel context.CancelFunc
 	done   chan error
+	logs   *logRing
 }
 
 // UDPEngineFactory fabrique des instances du moteur UDP.
 func UDPEngineFactory() (engine.Engine, error) {
 	return &UDPServerEngine{
 		configPath: defaultConfigPath(),
+		logs:       newLogRing(200),
 	}, nil
 }
 
@@ -56,15 +62,26 @@ func (e *UDPServerEngine) Description() string {
 	return "Moteur VPN UDP natif LABOSURF PRO (transport UDP personnalisé, chiffré uniquement côté proxy)."
 }
 
-// Install déploie le moteur sur le système. Pour l'instant, l'installation
-// système complète (binaire, service systemd, réseau) est gérée par
-// labosurf-pro.sh ; cette méthode vérifie la présence de la configuration.
+// Install déploie le moteur UDP sur le système : crée le répertoire de
+// données et écrit une configuration par défaut si elle est absente.
+// Le moteur UDP est natif (aucun binaire tiers à télécharger).
 func (e *UDPServerEngine) Install(ctx context.Context, cfg engine.InstallConfig) error {
-	// TODO(migration) : intégrer ici la logique de l'installeur
-	// (téléchargement binaire, SHA-256, service systemd, réseau).
-	if _, err := os.Stat(e.configPath); os.IsNotExist(err) {
-		return fmt.Errorf("configuration introuvable (%s) : lancez labosurf-pro.sh", e.configPath)
+	dir := filepath.Dir(e.configPath)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("création répertoire UDP (%s) : %w", dir, err)
 	}
+	if _, err := os.Stat(e.configPath); os.IsNotExist(err) {
+		defaultCfg := fmt.Sprintf(`{
+  "listen": "%s",
+  "store": "%s",
+  "portal": { "enabled": false, "listen": "%s" },
+  "auth": { "mode": "store", "users": {} }
+}`, defaultListen, store.StorePath(), defaultPortalListen)
+		if err := os.WriteFile(e.configPath, []byte(defaultCfg), 0o600); err != nil {
+			return fmt.Errorf("écriture configuration UDP par défaut : %w", err)
+		}
+	}
+	log.Printf("✔ UDP Engine : répertoire %s prêt, configuration %s", dir, e.configPath)
 	return nil
 }
 
@@ -79,19 +96,22 @@ func (e *UDPServerEngine) Configure(ctx context.Context, cfg engine.EngineConfig
 	return nil
 }
 
-// Start démarre le moteur UDP (bloquant jusqu'à l'arrêt).
+// Start démarre le moteur UDP et redirige les logs vers le ring buffer.
 func (e *UDPServerEngine) Start(ctx context.Context) error {
 	config, err := loadConfig(e.configPath)
 	if err != nil {
 		return fmt.Errorf("erreur de configuration : %w", err)
 	}
 
-	// Charger le store central pour la persistance quota.
 	st, err := store.LoadStore(store.StorePath())
 	if err != nil {
 		return fmt.Errorf("chargement store pour quota : %w", err)
 	}
 	e.store = st
+
+	// Redirige la sortie standard du package log vers le ring buffer pour que
+	// Logs() puisse retourner les vraies lignes de journal du serveur.
+	log.SetOutput(e.logs)
 
 	server, err := NewServer(config, st)
 	if err != nil {
@@ -137,15 +157,24 @@ func (e *UDPServerEngine) Restart(ctx context.Context) error {
 	return e.Start(ctx)
 }
 
-// Status retourne l'état courant du moteur.
+// Status retourne l'état courant du moteur (PID, adresse, port inclus).
 func (e *UDPServerEngine) Status() engine.EngineStatus {
 	if e.server == nil {
 		return engine.EngineStatus{Installed: true}
 	}
-	return engine.EngineStatus{
+	st := engine.EngineStatus{
 		Installed: true,
 		Running:   true,
+		PID:       os.Getpid(),
 	}
+	if e.server.conn != nil {
+		addr := e.server.conn.LocalAddr()
+		st.ListenAddr = addr.String()
+		if udpAddr, ok := addr.(*net.UDPAddr); ok {
+			st.Port = udpAddr.Port
+		}
+	}
+	return st
 }
 
 // HealthCheck vérifie que le moteur est opérationnel.
@@ -156,14 +185,14 @@ func (e *UDPServerEngine) HealthCheck() error {
 	return nil
 }
 
-// Logs retourne les dernières lignes de journal du moteur.
+// Logs retourne les dernières lignes du journal du moteur depuis le ring buffer.
 func (e *UDPServerEngine) Logs(lines int) ([]string, error) {
-	return nil, fmt.Errorf("journal non implémenté")
+	return e.logs.Last(lines), nil
 }
 
-// Update met à jour le moteur vers la dernière version.
+// Update : le moteur UDP est natif (aucun binaire tiers à re-télécharger).
 func (e *UDPServerEngine) Update() error {
-	return fmt.Errorf("mise à jour à faire via labosurf update")
+	return nil
 }
 
 // Uninstall désinstalle le moteur du système.
@@ -173,6 +202,47 @@ func (e *UDPServerEngine) Uninstall() error {
 }
 
 func init() {
-	// Enregistre le moteur UDP dans le registre global de la plateforme.
 	engine.Register("udp", UDPEngineFactory)
+}
+
+// logRing est un tampon circulaire thread-safe qui capture la sortie du
+// package log standard (log.SetOutput) pour l'exposer via Logs().
+type logRing struct {
+	mu  sync.Mutex
+	buf []string
+	max int
+}
+
+func newLogRing(max int) *logRing {
+	return &logRing{max: max}
+}
+
+func (l *logRing) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, line := range strings.Split(string(p), "\n") {
+		if line = strings.TrimSpace(line); line == "" {
+			continue
+		}
+		l.buf = append(l.buf, line)
+		if len(l.buf) > l.max {
+			l.buf = l.buf[len(l.buf)-l.max:]
+		}
+	}
+	return len(p), nil
+}
+
+// Last retourne les n dernières lignes dans l'ordre chronologique.
+func (l *logRing) Last(n int) []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if n <= 0 || n > len(l.buf) {
+		n = len(l.buf)
+	}
+	if n == 0 {
+		return []string{}
+	}
+	out := make([]string, n)
+	copy(out, l.buf[len(l.buf)-n:])
+	return out
 }

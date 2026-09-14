@@ -50,6 +50,45 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 }
 
+func TestCloudflareProxiedStatus(t *testing.T) {
+	p := Default()
+	p.Domains = []string{"reality.example.com", "cdn.example.com"}
+	if p.IsProxied("cdn.example.com") {
+		t.Fatal("nouveau domaine ne devrait pas être proxysé")
+	}
+	p.SetProxied("cdn.example.com", true)
+	if !p.IsProxied("cdn.example.com") {
+		t.Fatal("cdn.example.com devrait être proxysé après SetProxied(true)")
+	}
+	if p.IsProxied("reality.example.com") {
+		t.Fatal("reality.example.com ne devrait PAS être proxysé")
+	}
+	// Statut insensible à la casse et au point final.
+	if !p.IsProxied("CDN.example.com.") {
+		t.Fatal("statut proxysé insensible à la casse/point attendu")
+	}
+	p.SetProxied("cdn.example.com", false)
+	if p.IsProxied("cdn.example.com") {
+		t.Fatal("cdn.example.com ne devrait plus être proxysé après SetProxied(false)")
+	}
+
+	// Sauvegarde/relecture du statut.
+	setTempDir(t)
+	p2 := Default()
+	p2.Domains = []string{"a.example.com", "b.example.com"}
+	p2.SetProxied("b.example.com", true)
+	if err := p2.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !got.IsProxied("b.example.com") || got.IsProxied("a.example.com") {
+		t.Fatalf("statut Cloudflare non persisté correctement : %+v", got.Proxied)
+	}
+}
+
 func TestLoadMissingGivesDefaults(t *testing.T) {
 	setTempDir(t)
 	p, err := Load()

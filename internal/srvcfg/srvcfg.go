@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // DefaultFilename est le nom du fichier de profil dans le répertoire de données.
@@ -23,6 +24,41 @@ type Profile struct {
 
 	// Domaines autorisés (ex. pour dnstt/slowdns qui utilisent le DNS).
 	Domains []string `json:"domains,omitempty"`
+
+	// Proxied liste les sous-domaines passés en mode proxy (nuage orange)
+	// chez Cloudflare. Un domaine proxysé ne peut PAS porter un inbound
+	// REALITY/tcp (Cloudflare termine le TLS) ; il convient aux transports
+	// ws/xhttp derrière le CDN (l'inbound doit alors écouter en local
+	// 127.0.0.1, Cloudflare/tunnel jouant le reverse proxy amont).
+	Proxied []string `json:"proxied,omitempty"`
+}
+
+// IsProxied indique si un sous-domaine est marqué proxysé (Cloudflare).
+func (p *Profile) IsProxied(domain string) bool {
+	for _, d := range p.Proxied {
+		if strings.EqualFold(strings.TrimSuffix(d, "."), strings.TrimSuffix(domain, ".")) {
+			return true
+		}
+	}
+	return false
+}
+
+// SetProxied marque ou démarque un sous-domaine comme proxysé.
+func (p *Profile) SetProxied(domain string, proxied bool) {
+	normalized := strings.TrimSuffix(strings.TrimSpace(domain), ".")
+	current := p.IsProxied(normalized)
+	if proxied && !current {
+		p.Proxied = append(p.Proxied, normalized)
+	}
+	if !proxied && current {
+		out := p.Proxied[:0]
+		for _, d := range p.Proxied {
+			if !strings.EqualFold(d, normalized) {
+				out = append(out, d)
+			}
+		}
+		p.Proxied = out
+	}
 }
 
 // DefaultPorts associe un port par défaut à chaque moteur.

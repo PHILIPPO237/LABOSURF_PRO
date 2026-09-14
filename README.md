@@ -37,7 +37,7 @@ Tout se pilote depuis un menu interactif en SSH (`menu` ou `labosurf`) — captu
 | **SlowDNS** | DNS Tunnel | 53/UDP | Transport | Tunnel DNS sur UDP (auth Ed25519, backend TCP) |
 | **DNSTT** | DNS Tunnel | 53/UDP | Transport | Tunnel DNS quasi-indétectable (sessions, fragmentation) |
 | **SSH** | SSH | 22/TCP | Accès | Serveur SSH natif (auth Ed25519, shell non-root) |
-| **Freeway-Gate** | HTTP proxy (CONNECT) | 8080/TCP | Proxy | Reverse proxy zero-rating multi-opérateur (MTN Free Basics + Orange Maxit), chaînage CONNECT côté serveur, injection d'en-têtes, rate limit, health |
+| **Freeway-Gate** | HTTP proxy (CONNECT) | 8080/TCP | Proxy | Reverse proxy zero-rating multi-opérateur (MTN + Orange Maxit), chaînage CONNECT côté serveur, injection d'en-têtes, rate limit, health |
 
 Chaque moteur est un **binaire autonome** (`labosurf-<moteur>`), déployé et supervisé par son propre service systemd — voir [Gestion des moteurs](#gestion-des-moteurs).
 

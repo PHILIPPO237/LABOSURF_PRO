@@ -97,6 +97,35 @@ func EnsureHysteria2Certs(dataDir string) (certPath, keyPath string, err error) 
 	return certPath, keyPath, nil
 }
 
+// EnsureXrayCerts génère (si absents) une paire certificat/clé TLS
+// auto-signée pour le moteur Xray via openssl, sous le répertoire de données
+// du moteur — modèle identique à EnsureHysteriaCerts/EnsureTUICCerts. Utilisé
+// quand l'opérateur choisit le mode TLS sans fournir ses propres chemins :
+// le client devra alors activer allowInsecure (même contrainte que
+// Hysteria/TUIC) ; un vrai certificat (ex. Let's Encrypt) reste nécessaire
+// pour une chaîne de confiance publique.
+func EnsureXrayCerts(dataDir string) (certPath, keyPath string, err error) {
+	dir := filepath.Join(dataDir, "xray")
+	if err := EnsureDir(dir); err != nil {
+		return "", "", err
+	}
+	certPath = filepath.Join(dir, "cert.pem")
+	keyPath = filepath.Join(dir, "key.pem")
+
+	if fileExists(certPath) && fileExists(keyPath) {
+		return certPath, keyPath, nil
+	}
+
+	cmd := exec.Command("openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt",
+		"ec_paramgen_curve:prime256v1", "-keyout", keyPath, "-out", certPath,
+		"-days", "3650", "-nodes", "-subj", "/C=FR/ST=LaboSurf/O=LaboSURF PRO/CN=labosurf.local")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", "", fmt.Errorf("openssl (génération certificat Xray) : %v\n%s", err, string(out))
+	}
+	return certPath, keyPath, nil
+}
+
 func fileExists(p string) bool {
 	fi, err := os.Stat(p)
 	return err == nil && !fi.IsDir()

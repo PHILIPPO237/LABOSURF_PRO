@@ -353,7 +353,30 @@ func runSingleEngineMenu(e engine.Engine) {
 		case "1":
 			menuInstall(e)
 		case "2":
-			menuConfigure(e)
+			switch e.Name() {
+			case store.EngineXray:
+				menuXrayConfig(e)
+			case "freeway-gate":
+				menuFreewayConfig(e)
+			case store.EngineHysteria:
+				menuHysteriaConfig(e)
+			case store.EngineHysteria2:
+				menuHysteria2Config(e)
+			case store.EngineSlowDNS:
+				menuSlowDNSConfig(e)
+			case store.EngineDNSTT:
+				menuDNSTTConfig(e)
+			case store.EngineSSH:
+				menuSSHConfig(e)
+			case store.EngineTUIC:
+				menuTUICConfig(e)
+			case store.EngineWireGuard:
+				menuWireGuardConfig(e)
+			case store.EngineUDP:
+				menuUDPConfig(e)
+			default:
+				menuConfigure(e)
+			}
 		case "3":
 			fmt.Println("\n  ▶️ Démarrage du moteur " + name(e) + "...")
 			if err := e.Start(context.Background()); err != nil {
@@ -864,10 +887,17 @@ func runServerProfileMenu() {
 		fmt.Println("  ── ⚙️ PROFIL SERVEUR ───────────────────────────────────")
 		fmt.Println()
 		fmt.Println("  Adresse publique : " + orDim(prof.Host, "(non définie)"))
+		fmt.Println("  Domaines :")
 		if len(prof.Domains) > 0 {
-			fmt.Println("  Domaines         : " + strings.Join(prof.Domains, ", "))
+			for _, d := range prof.Domains {
+				mark := dim("· DNS-only")
+				if prof.IsProxied(d) {
+					mark = yellow("☁ proxysé (Cloudflare)")
+				}
+				fmt.Printf("    - %-30s %s\n", strings.TrimSuffix(d, "."), mark)
+			}
 		} else {
-			fmt.Println("  Domaines         : (aucun)")
+			fmt.Println("    (aucun)")
 		}
 		fmt.Println()
 		fmt.Println("  Ports par moteur :")
@@ -878,6 +908,7 @@ func runServerProfileMenu() {
 		fmt.Println("  " + cyan("1") + " ✏️  DÉFINIR L'ADRESSE PUBLIQUE")
 		fmt.Println("  " + cyan("2") + " 🌐 AJOUTER UN DOMAINE")
 		fmt.Println("  " + cyan("3") + " 🔢 MODIFIER UN PORT")
+		fmt.Println("  " + cyan("4") + " ☁  MARQUER UN SOUS-DOMAINE CLOUDFLARE")
 		fmt.Println("  " + dim("0") + " 🔙 RETOUR")
 		fmt.Println()
 
@@ -917,6 +948,30 @@ func runServerProfileMenu() {
 				}
 			} else {
 				fmt.Println("  " + red("✗ Port invalide."))
+			}
+		case "4":
+			// Bascule du statut Cloudflare d'un sous-domaine : DNS-only (gris,
+			// requis pour REALITY/tcp) ou proxysé (orange, ws/xhttp derrière le CDN).
+			if len(prof.Domains) == 0 {
+				fmt.Println("  " + yellow("⚠ Aucun sous-domaine enregistré — ajoutez-en via [2]."))
+				break
+			}
+			for i, d := range prof.Domains {
+				mark := dim("· DNS-only")
+				if prof.IsProxied(d) {
+					mark = yellow("☁ proxysé")
+				}
+				fmt.Printf("    %d) %-30s %s\n", i+1, strings.TrimSuffix(d, "."), mark)
+			}
+			fmt.Printf("  Sous-domaine à basculer (1-%d, 0 = annuler) : ", len(prof.Domains))
+			var idx int
+			if _, err := fmt.Sscanf(promptLine(""), "%d", &idx); err == nil && idx >= 1 && idx <= len(prof.Domains) {
+				prof.SetProxied(prof.Domains[idx-1], !prof.IsProxied(prof.Domains[idx-1]))
+				if err := prof.Save(); err != nil {
+					fmt.Println("  " + red("✗ "+err.Error()))
+				} else {
+					fmt.Println("  " + green("✔ Statut Cloudflare mis à jour."))
+				}
 			}
 		case "0":
 			return

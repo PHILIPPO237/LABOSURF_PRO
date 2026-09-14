@@ -2,7 +2,7 @@
 //
 // Ce moteur télécharge, configure et supervise le binaire freeway-gate
 // (https://github.com/PHILIPPO237/freeway-gate) : reverse proxy
-// multi-opérateur zero-rating (MTN Free Basics + Orange Maxit), chaînage
+// multi-opérateur zero-rating (MTN + Orange Maxit), chaînage
 // CONNECT côte serveur (round-robin + failover), injection d'en-têtes,
 // rate limit et health.
 //
@@ -32,7 +32,7 @@ import (
 
 const (
 	engineName = "freeway-gate"
-	engineDesc = "Reverse proxy multi-operateur zero-rating (MTN Free Basics + Orange Maxit), chainage CONNECT serveur"
+	engineDesc = "Reverse proxy multi-operateur zero-rating (MTN + Orange Maxit), chainage CONNECT serveur"
 	engineVer  = "0.1.0"
 
 	defaultDataDir = "/etc/labosurf/engines/freeway-gate"
@@ -449,23 +449,26 @@ const DefaultConfigJSON = `{
     "mtn": {
       "target": "http://127.0.0.1:80",
       "headers": {
-        "user-agent": "Mozilla/5.0 (Linux; Android 11; %MODEL%) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Mobile Safari/537.36 [FBAN/FB4A;FBAV/419.0.0.45.100;FBPN/com.facebook.katana;FBDV/%MODEL%;FBLC/fr_FR;FBCR/MTN]",
+        "user-agent": "Mozilla/5.0 (Linux; Android 14; %MODEL%) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.7871.46 Mobile Safari/537.36",
         "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
         "accept-encoding": "gzip, deflate, br",
-        "accept-language": "en-US,en;q=0.9",
-        "x-requested-with": "com.facebook.katana",
-        "referer": "https://m.facebook.com/",
-        "connection": "keep-alive"
+        "accept-language": "fr-CM,fr;q=0.9,en-US;q=0.8",
+        "referer": "https://one.mtn.cm/",
+        "connection": "keep-alive",
+        "sec-ch-ua": "\"Chromium\";v=\"150\", \"Google Chrome\";v=\"150\", \"Not?A_Brand\";v=\"99\"",
+        "sec-ch-ua-mobile": "?1",
+        "sec-ch-ua-platform": "\"Android\"",
+        "sec-ch-ua-platform-version": "\"14.0.0\"",
+        "sec-ch-ua-model": "\"%MODEL%\""
       },
       "ua_models": ["SM-A515F", "SM-A125F", "SM-G780F", "M2101K6G", "CPH2399"],
-      "bsids": ["@AK_QL", "@mtnplaycom"],
       "chains": [],
       "chain_target": ""
     },
     "orange": {
       "target": "http://127.0.0.1:81",
       "headers": {
-        "user-agent": "OrangeMaxit/4.0.0 (Linux; Android 13; %MODEL%)",
+        "user-agent": "OrangeMaxit/8.0.0 (Linux; Android 13; %MODEL%)",
         "accept": "application/json,text/plain,*/*",
         "accept-encoding": "gzip, deflate, br",
         "accept-language": "fr-CM,fr;q=0.9,en-US;q=0.8",

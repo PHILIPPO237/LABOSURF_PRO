@@ -992,8 +992,8 @@ d'usage le plus proche de l'architecture existante.
    s'identifie comme appartenant à "Philippo237", promoteur du "Laboratoire
    du Free-Surf") est un reverse proxy Node.js qui route le trafic VLESS/
    XHTTP selon le sous-domaine (`mtn.proxy.*`/`orange.proxy.*`) pour
-   **imiter le trafic zero-rated "Free Basics" de MTN Cameroun et "Pass Max
-   It" d'Orange Cameroun** (le README documente une injection d'en-têtes
+   **imiter le trafic zero-rating des opérateurs mobiles MTN et Orange
+   Cameroun** (le README documente une injection d'en-têtes
    d'identification d'application, ex. `x-iorg-bsid`, `User-Agent` factice,
    package Android imité — mécanisme absent du `server.js` actuellement sur
    disque, qui délègue explicitement "le chaînage... côté client
