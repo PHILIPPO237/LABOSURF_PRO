@@ -179,9 +179,23 @@ func convertGrantToAccess(
 	}
 	a.UsedBytes = acc.UsedBytes
 
-	// Limites (MaxIPs → MaxDevices est la correspondance la plus proche)
+	// MaxConnections : correspondance directe.
 	a.MaxConnections = acc.MaxConnections
-	a.MaxDevices = acc.MaxIPs
+
+	// MaxSourceIPs : correspondance directe avec Account.MaxIPs.
+	// MaxIPs dans l'ancien système est une contrainte réseau (nombre d'adresses IP
+	// sources simultanées actives), contrôlée par le SessionManager UDP.
+	// Cette notion est distincte de MaxDevices (appareils physiques) — une IP
+	// peut regrouper plusieurs appareils (NAT) et un appareil peut changer d'IP.
+	// On la préserve telle quelle dans MaxSourceIPs plutôt que de la convertir
+	// en MaxDevices, ce qui serait architecturalement incorrect.
+	a.MaxSourceIPs = acc.MaxIPs
+
+	// MaxDevices : pas de correspondance directe dans l'ancien système.
+	// L'ancien modèle ne distinguait pas les appareils physiques des adresses IP.
+	// On laisse MaxDevices à 0 (illimité) après migration ; l'opérateur peut le
+	// fixer explicitement via les menus M4.
+	a.MaxDevices = 0
 
 	// Expiration (string RFC3339 ou "" — même format)
 	a.ExpiresAt = acc.ExpiresAt

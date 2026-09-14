@@ -228,6 +228,24 @@ Le modèle de licence protège **l'accès au script d'installation**, pas l'exé
 - **Quotas** : persistés sur disque (`users_db.json`), survivent aux redémarrages
 - **Secrets** : UUID (Xray), mots de passe (Hysteria), UUID + mot de passe (TUIC), paires Ed25519 (SlowDNS/DNSTT/SSH), paire Curve25519 + adresse VPN unique (WireGuard — pool `10.66.0.0/24`) — gérés automatiquement
 
+### Nouveau modèle Service / Accès (`internal/service`, écrans `cmd/labosurf`)
+
+En parallèle du système Comptes/Grants ci-dessus (toujours actif et non modifié), le dépôt contient un second modèle, plus explicite, pensé pour un abonné rattaché à plusieurs instances d'un même moteur :
+
+```
+Moteur → Profil (optionnel) → Service → Abonné → Accès → Configuration client
+```
+
+- **Service** (`internal/service.Service`) : une instance nommée et configurée d'un moteur (ex. « Xray-France », port 443) ou d'une chaîne hybride déjà créée (ex. « DNSTT→Xray »). Deux Services peuvent utiliser le même moteur sur des ports différents.
+- **Accès** (`internal/service.Access`) : le droit d'un abonné précis sur un Service précis. Un abonné peut avoir plusieurs Accès (un par Service). Contient son propre quota, ses propres secrets (UUID/clé/mot de passe générés automatiquement, `EnsureAccessSecrets`), sa propre expiration.
+- **Quota** : `QuotaUnlimited` (booléen explicite) ou `QuotaLimitBytes` (aucune ambiguïté « 0 = illimité » comme dans l'ancien système).
+- **MaxDevices / MaxConnections / MaxSourceIPs** : trois compteurs **distincts et non interchangeables** — appareils physiques autorisés, connexions simultanées, adresses IP sources simultanées. Ce sont des **limites déclaratives stockées sur l'Accès** : ce dépôt ne les applique pas lui-même au niveau réseau (aucun compteur de connexions actives, aucun blocage d'IP en trop n'est câblé sur ce nouveau modèle) — à la différence de l'ancien `Account.MaxIPs`/`MaxConnections`, qui *est* activement contrôlé par le moteur UDP historique (`engines/udp`, `SessionManager.Admit`).
+- **Services hybrides** : un Service hybride reste **un seul objet** (jamais deux Services indépendants) ; un Accès vers lui est unique et couvre tous les composants.
+- **Migration** : `MigrateGrantsToAccess` convertit les Grants existants en Accès, de façon idempotente (relançable sans doublon) et **sans jamais supprimer ni modifier les Grants d'origine** — les deux systèmes coexistent.
+- **Lien Service→Profil** : un Service peut référencer un profil nommé existant (`ProfileID`), mais ce lien est **une référence, pas une application automatique** — les paramètres techniques du profil (transport, sécurité, domaine, etc.) ne sont appliqués au moteur que via une activation explicite du profil dans le menu **PROFILS NOMMÉS**.
+
+⚠️ **Ce nouveau modèle vit exclusivement dans `cmd/labosurf`** (menus `[6] SERVICES` et `[7] ACCÈS` du menu central), le même binaire que le [gestionnaire multi-moteurs](#limitation-connue-gestionnaire-multi-moteurs) — **il n'est donc pas installé par `labosurf-pro.sh`** sur une installation VPS standard aujourd'hui, exactement comme les hybrides. Voir [Roadmap et limitations connues](#roadmap-et-limitations-connues).
+
 ## Mise à jour
 
 Il n'existe pas de mécanisme de mise à jour automatique (le menu interactif option `[6] MISE À JOUR` est un simple rappel, pas un updater). Pour mettre à jour :
@@ -334,9 +352,11 @@ LABOSURF_PRO/
 │   ├── engineudp/              # Superviseur UDP Engine
 │   ├── enginecli/              # CLI partagée (install/start/stop/...)
 │   ├── store/                  # Store central (comptes, offres, grants, quota)
+│   ├── service/                # Modèle Service/Accès (voir Comptes et abonnements) — CRUD, secrets, migration Grants→Access
+│   ├── profile/                 # Profils nommés par moteur (simple/hybride)
 │   ├── secret/                 # Génération UUID/Ed25519/tokens
 │   ├── srvcfg/                 # Profil serveur (IP/ports)
-│   ├── clientcfg/               # Génération config serveur + lien client
+│   ├── clientcfg/               # Génération config serveur + lien client (Account et Access)
 │   └── license/                # Vérification licence plateforme
 ├── engines/
 │   ├── udp/                    # Moteur UDP natif (module Go séparé) — binaire installé comme "labosurf"
@@ -375,6 +395,11 @@ LABOSURF_PRO/
 - WireGuard nécessite `wireguard-tools` installé manuellement (voir [Firewall](#firewall-ce-qui-est-automatique-et-ce-qui-ne-lest-pas)) et n'est pas disponible sur Android.
 - TUIC et Hysteria2 partagent le port UDP/443 par défaut — un seul des deux peut tourner sans reconfiguration de port.
 - La génération automatique des secrets par compte (`EnsureEngineSecrets`) ne couvre pas encore tous les noms d'hybrides possibles (ex. futurs hybrides autres que les 4 listés ci-dessus) — voir `ARCHITECTURE_HYBRIDES.md` pour le détail.
+- **Nouveau modèle Service/Accès** (voir [Comptes et abonnements](#comptes-et-abonnements)) : vit dans le même binaire `cmd/labosurf` que le gestionnaire multi-moteurs, donc **pas installé** par l'installateur VPS standard aujourd'hui.
+- `MaxDevices`/`MaxConnections`/`MaxSourceIPs` sur un Accès sont des **limites déclaratives**, non appliquées au niveau réseau par ce dépôt (contrairement à l'ancien `Account.MaxIPs`/`MaxConnections`, activement contrôlés par le moteur UDP).
+- Le lien `Service.ProfileID` est une **référence seule** : il n'applique pas automatiquement les paramètres techniques du profil visé — l'opérateur doit activer ce profil séparément (menu PROFILS NOMMÉS) pour que `Configure()` en tienne compte.
+- Aucun moteur ne possède d'état « activé/désactivé » indépendant d'« installé »/« démarré » (`engine.EngineStatus{Installed, Running}` uniquement) : la disponibilité d'un moteur pour créer un Service se base sur `Installed`, faute d'un état dédié.
+- Voir `docs/M1_SERVICE_ACCESS_IMPLEMENTATION.md`, `docs/M2_ACCESS_SECRETS_CLIENTCFG_IMPLEMENTATION.md`, `docs/M3_GRANTS_TO_ACCESS_SERVER_CONFIG_IMPLEMENTATION.md` et `docs/M4_UI_SERVICES_SUBSCRIBERS_ACCESS_IMPLEMENTATION.md` pour le détail complet de conception, tests et limites de ce nouveau modèle.
 
 Voir `ETUDE_PROTOCOLes_COMPATIBLES.md` pour l'analyse complète (matrice de compatibilité, [CONFIRMÉ]/[COMPATIBLE THÉORIQUEMENT]/[À TESTER]/[INCOMPATIBLE]/[NÉCESSITE NOUVELLE ARCHITECTURE]) et `ARCHITECTURE_HYBRIDES.md` pour l'architecture de chaînage détaillée.
 

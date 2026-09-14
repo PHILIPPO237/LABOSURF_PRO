@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"labosurf/internal/engine"
+	"labosurf/internal/service"
 	"labosurf/internal/srvcfg"
 	"labosurf/internal/store"
 )
@@ -243,6 +244,31 @@ func accountSummary() (total, active, expired int) {
 	return total, active, expired
 }
 
+// serviceAccessSummary retourne le nombre de Services actifs et d'Access
+// actifs (M4). Retourne (0, 0) sans bloquer si les répertoires n'existent
+// pas encore (installation n'ayant jamais utilisé Services/Access).
+func serviceAccessSummary() (servicesActive, accessActive int) {
+	svcs, err := service.ListServices()
+	if err != nil {
+		return 0, 0
+	}
+	for _, s := range svcs {
+		if s.Enabled {
+			servicesActive++
+		}
+	}
+	accesses, err := service.ListAllAccess()
+	if err != nil {
+		return servicesActive, 0
+	}
+	for _, a := range accesses {
+		if a.Enabled {
+			accessActive++
+		}
+	}
+	return servicesActive, accessActive
+}
+
 // licenseActivated indique si cette machine a un reçu d'activation de
 // licence local (voir internal/license : 1 clé = 1 installation).
 func licenseActivated() bool {
@@ -320,6 +346,12 @@ func printSystemPanel() {
 			"   " + yellow("●") + " Expirés " + expiredState +
 			"   " + cyan("●") + " Connexions " + readActiveConns() +
 			"   " + "Licence " + licenceState,
+	)
+
+	svcActive, accActive := serviceAccessSummary()
+	fmt.Println(
+		"  " + cyan("●") + " Services actifs " + itoa(svcActive) +
+			"   " + cyan("●") + " Accès actifs " + itoa(accActive),
 	)
 
 	fmt.Println(dim("  ── SYSTÈME ─────────────────────────────────────────"))

@@ -282,10 +282,14 @@ func TestMigrateExpiration(t *testing.T) {
 }
 
 // ============================================================
-// T9 — MaxDevices : Account.MaxIPs → Access.MaxDevices
+// T9 — MaxSourceIPs : Account.MaxIPs → Access.MaxSourceIPs (pas MaxDevices)
+//
+// MaxIPs dans l'ancien système = limite réseau (IPs sources simultanées).
+// MaxDevices dans le nouveau système = appareils physiques distincts.
+// Ce sont deux notions différentes : ne pas les confondre.
 // ============================================================
 
-func TestMigrateMaxDevices(t *testing.T) {
+func TestMigrateMaxSourceIPs(t *testing.T) {
 	setupMigrationDir(t)
 	createTestService(t, store.EngineXray)
 
@@ -300,8 +304,51 @@ func TestMigrateMaxDevices(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAccess: %v", err)
 	}
-	if a.MaxDevices != 3 {
-		t.Fatalf("MaxDevices : attendu 3, obtenu %d", a.MaxDevices)
+	// MaxSourceIPs doit recevoir la valeur de Account.MaxIPs (contrainte réseau).
+	if a.MaxSourceIPs != 3 {
+		t.Fatalf("MaxSourceIPs : attendu 3 (valeur de Account.MaxIPs), obtenu %d", a.MaxSourceIPs)
+	}
+	// MaxDevices doit rester 0 après migration : pas de correspondance directe
+	// dans l'ancien système — l'ancien modèle ne distinguait pas appareils et IPs.
+	if a.MaxDevices != 0 {
+		t.Fatalf("MaxDevices : attendu 0 après migration (pas de mapping depuis MaxIPs), obtenu %d", a.MaxDevices)
+	}
+}
+
+// ============================================================
+// T9b — MaxDevices et MaxSourceIPs sont indépendants
+//
+// Vérifie que les deux champs peuvent prendre des valeurs différentes
+// et ne s'influencent pas mutuellement.
+// ============================================================
+
+func TestMigrateMaxDevicesAndMaxSourceIPsAreIndependent(t *testing.T) {
+	setupMigrationDir(t)
+	createTestService(t, store.EngineXray)
+
+	// Compte avec MaxIPs=5 → MaxSourceIPs=5, MaxDevices reste 0
+	acc := makeTestAccount("acc-t9b", store.EngineXray, map[string]any{"uuid": "u9b"}, withMaxIPs(5))
+	results := MigrateGrantsToAccess([]store.Account{acc})
+
+	if len(results) != 1 || results[0].Status != MigrateCreated {
+		t.Fatalf("migration: %v", results)
+	}
+
+	a, err := GetAccess(results[0].AccessID)
+	if err != nil {
+		t.Fatalf("GetAccess: %v", err)
+	}
+
+	if a.MaxSourceIPs == a.MaxDevices {
+		t.Fatalf("MaxSourceIPs (%d) et MaxDevices (%d) ne doivent pas être égaux après migration "+
+			"(MaxDevices=0=illimité, MaxSourceIPs=valeur de MaxIPs)",
+			a.MaxSourceIPs, a.MaxDevices)
+	}
+	if a.MaxSourceIPs != 5 {
+		t.Fatalf("MaxSourceIPs : attendu 5, obtenu %d", a.MaxSourceIPs)
+	}
+	if a.MaxDevices != 0 {
+		t.Fatalf("MaxDevices : attendu 0 (illimité), obtenu %d", a.MaxDevices)
 	}
 }
 

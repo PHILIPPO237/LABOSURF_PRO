@@ -115,12 +115,24 @@ L'ambiguïté de l'ancien `0 = illimité` est éliminée dans le nouveau systèm
 
 ---
 
-## 8. Mapping Appareils / Connexions
+## 8. Mapping Appareils / Connexions / IPs sources
 
-| Ancien champ | Nouveau champ | Note |
-|--------------|---------------|------|
-| `Account.MaxIPs` | `Access.MaxDevices` | Appareils distincts (IPs sources) |
+**Correction architecturale (post-revue M3) :** le mapping initial `MaxIPs → MaxDevices` était
+incorrect. `MaxIPs` est une contrainte réseau (IPs sources simultanées, contrôlée par le
+SessionManager UDP), distincte de la notion d'appareil physique.
+
+| Ancien champ | Nouveau champ | Sémantique |
+|--------------|---------------|------------|
+| `Account.MaxIPs` | `Access.MaxSourceIPs` | Limite réseau : adresses IP sources distinctes simultanées |
 | `Account.MaxConnections` | `Access.MaxConnections` | Connexions simultanées |
+| *(absent)* | `Access.MaxDevices` | Appareils physiques distincts — **laissé à 0 après migration** |
+
+**Pourquoi `MaxIPs ≠ MaxDevices` :**
+- Un appareil peut changer d'IP (mobilité, reconnexion).
+- Une IP peut regrouper plusieurs appareils (NAT, réseau partagé).
+- `MaxDevices` n'a pas d'équivalent dans l'ancien modèle ; l'opérateur le fixe manuellement (M4).
+
+**Après migration :** `Access.MaxDevices = 0` (illimité), `Access.MaxSourceIPs = Account.MaxIPs`.
 
 ---
 
@@ -206,7 +218,8 @@ Grant.Config["private_key"]→ Access.Secrets["private_key"](dnstt)
 | T6 | `TestMigrateQuotaUnlimited` | QuotaBytes==0 → QuotaUnlimited=true |
 | T7 | `TestMigrateQuotaLimited` | QuotaBytes>0 → QuotaUnlimited=false, QuotaLimitBytes correct |
 | T8 | `TestMigrateExpiration` | ExpiresAt préservé tel quel |
-| T9 | `TestMigrateMaxDevices` | Account.MaxIPs → Access.MaxDevices |
+| T9 | `TestMigrateMaxSourceIPs` | Account.MaxIPs → Access.MaxSourceIPs ; Access.MaxDevices = 0 |
+| T9b | `TestMigrateMaxDevicesAndMaxSourceIPsAreIndependent` | MaxDevices ≠ MaxSourceIPs après migration |
 | T10 | `TestMigrateMaxConnections` | Account.MaxConnections → Access.MaxConnections |
 | T11 | `TestMigrateWireGuardAddressUniqueness` | 2 comptes WG → adresses différentes |
 | T12 | `TestMigrateGrantsPreserved` | Grants originaux non supprimés |
@@ -217,7 +230,7 @@ Grant.Config["private_key"]→ Access.Secrets["private_key"](dnstt)
 | T17 | `TestMigrateNoDuplicates` | MigrateStats : 1/0/0 puis 0/1/0, 1 seul Access en base |
 | T18 | `TestMigrateServiceNotFound` | Aucun Service → MigrateFailed avec erreur explicite |
 
-**Résultat :** 18/18 PASS (`go test ./internal/service/... -v`)
+**Résultat :** 19/19 PASS (`go test ./internal/service/... -v`) — T9b ajouté lors de la correction architecturale MaxIPs/MaxDevices.
 
 ---
 
@@ -281,6 +294,8 @@ Pas de dépendance circulaire introduite.
 | Grants | Jamais supprimés, jamais modifiés |
 | WireGuard | Unicité garantie entre anciens Grants et nouveaux Access |
 | Quota | Mapping explicite (0=illimité dans ancien → QuotaUnlimited=true) |
+| MaxSourceIPs | `Account.MaxIPs → Access.MaxSourceIPs` (sémantique réseau préservée) |
+| MaxDevices | Laissé à 0 après migration (pas de correspondance dans l'ancien système) |
 | Service ambigu | MigrateFailed explicite (>1 services pour un moteur) |
 | Service absent | MigrateFailed explicite (0 services pour un moteur) |
 
@@ -326,14 +341,15 @@ func ApplyServerConfigFromAccess(ctx context.Context, svc service.Service, acces
 - `migration_test.go` : ~320 lignes
 - `server_access.go` : ~75 lignes
 
-**Tests :** 18 nouveaux tests migration (tous PASS) + 18 secrets (tous PASS) + 55 tests M1 existants = **91 tests PASS** dans `./internal/service/...`
+**Tests :** 19 tests migration (tous PASS, dont T9b correction MaxIPs/MaxDevices) + 18 secrets (tous PASS) + 55 tests M1 existants = **92 tests PASS** dans `./internal/service/...`
 
 **Objectifs M3 atteints :**
 - [x] Migration idempotente Grants → Access
 - [x] Préservation des secrets existants
 - [x] Génération des secrets manquants
 - [x] Unicité WireGuard pendant la transition
-- [x] Mapping Quota, MaxDevices, MaxConnections, ExpiresAt, Enabled
+- [x] Mapping Quota, MaxSourceIPs (depuis MaxIPs), MaxConnections, ExpiresAt, Enabled
+- [x] MaxDevices non migré automatiquement (laissé à 0 — pas d'équivalent dans l'ancien système)
 - [x] Association Grant → Service (1 service = OK, ambiguïté = erreur explicite)
 - [x] ApplyServerConfigFromAccess (nouvelle API, ancienne inchangée)
 - [x] Support hybrides (bridge synthétique)

@@ -57,6 +57,10 @@ func runCentralMenu() {
 		fmt.Println("      IP publique, domaines et ports par moteur (configs serveur + client).")
 		fmt.Println("  " + cyan("5") + " 📋 PROFILS NOMMÉS")
 		fmt.Println("      Gérez les configurations nommées par moteur (créer, activer, dupliquer).")
+		fmt.Println("  " + cyan("6") + " 🧩 SERVICES")
+		fmt.Println("      Instances nommées d'un moteur ou d'une chaîne hybride (simple/hybride).")
+		fmt.Println("  " + cyan("7") + " 🔑 ACCÈS")
+		fmt.Println("      Droits d'un abonné sur un service : quota, appareils, expiration.")
 		fmt.Println("  " + cyan("9") + " ℹ️ À PROPOS")
 		fmt.Println("  " + dim("0") + " ❌ QUITTER")
 		fmt.Println()
@@ -73,6 +77,10 @@ func runCentralMenu() {
 			runServerProfileMenu()
 		case "5":
 			runProfileMenu()
+		case "6":
+			runServiceMenu()
+		case "7":
+			runAccessMenu()
 		case "9":
 			printAbout()
 		case "0":

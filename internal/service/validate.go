@@ -85,6 +85,9 @@ func ValidateAccess(a *Access) error {
 	if a.MaxConnections < 0 {
 		ve.add("MaxConnections ne peut pas être négatif (%d)", a.MaxConnections)
 	}
+	if a.MaxSourceIPs < 0 {
+		ve.add("MaxSourceIPs ne peut pas être négatif (%d)", a.MaxSourceIPs)
+	}
 
 	// Quota : en mode limité, QuotaLimitBytes=0 est refusé explicitement.
 	// Utiliser QuotaUnlimited=true pour un accès illimité.

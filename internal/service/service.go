@@ -189,13 +189,22 @@ type Access struct {
 	UsedBytes int64 `json:"used_bytes"`
 
 	// --- Appareils / Sessions ---
-	// MaxDevices est le nombre maximum d'appareils distincts autorisés (IPs sources).
+	// MaxDevices est le nombre maximum d'appareils physiques distincts autorisés.
+	// Un appareil est une entité cliente identifiée (ex: téléphone, ordinateur).
 	// 0 = illimité.
+	// Ne pas confondre avec MaxSourceIPs (limite réseau sur les adresses IP).
 	MaxDevices int `json:"max_devices"`
 
 	// MaxConnections est le nombre maximum de connexions simultanées autorisées,
 	// toutes connexions confondues. 0 = illimité.
 	MaxConnections int `json:"max_connections"`
+
+	// MaxSourceIPs est la limite maximale d'adresses IP sources distinctes
+	// simultanément actives. C'est une contrainte réseau héritée de l'ancien
+	// champ Account.MaxIPs — elle est distincte de MaxDevices (appareils) car
+	// une IP peut regrouper plusieurs appareils (NAT) et un appareil peut
+	// changer d'IP. 0 = illimité.
+	MaxSourceIPs int `json:"max_source_ips,omitempty"`
 
 	// --- Expiration ---
 	// ExpiresAt est la date d'expiration de l'accès au format RFC3339.

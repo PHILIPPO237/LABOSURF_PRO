@@ -223,6 +223,12 @@ func listAllAccess() ([]Access, error) {
 	return out, nil
 }
 
+// ListAllAccess retourne tous les Access persistés, tous comptes et services
+// confondus. Utilisé par les écrans d'administration (liste globale des accès).
+func ListAllAccess() ([]Access, error) {
+	return listAllAccess()
+}
+
 // ListAccessByAccount retourne tous les Access d'un abonné donné.
 func ListAccessByAccount(accountID string) ([]Access, error) {
 	all, err := listAllAccess()
