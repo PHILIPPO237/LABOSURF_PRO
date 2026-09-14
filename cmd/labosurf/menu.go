@@ -55,6 +55,8 @@ func runCentralMenu() {
 		fmt.Println("      Récapitulatif de tous les moteurs (installés / en cours).")
 		fmt.Println("  " + cyan("4") + " ⚙️  PROFIL SERVEUR")
 		fmt.Println("      IP publique, domaines et ports par moteur (configs serveur + client).")
+		fmt.Println("  " + cyan("5") + " 📋 PROFILS NOMMÉS")
+		fmt.Println("      Gérez les configurations nommées par moteur (créer, activer, dupliquer).")
 		fmt.Println("  " + cyan("9") + " ℹ️ À PROPOS")
 		fmt.Println("  " + dim("0") + " ❌ QUITTER")
 		fmt.Println()
@@ -69,6 +71,8 @@ func runCentralMenu() {
 			runGlobalStatus()
 		case "4":
 			runServerProfileMenu()
+		case "5":
+			runProfileMenu()
 		case "9":
 			printAbout()
 		case "0":
