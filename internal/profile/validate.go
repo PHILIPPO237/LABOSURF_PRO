@@ -37,17 +37,23 @@ func Validate(p Profile) ValidationResult {
 
 func validateSimple(p Profile) ValidationResult {
 	var errs []string
-	if p.Engine == "" {
-		errs = append(errs, "le champ engine est vide")
-	} else if _, ok := engineutil.GetEngineCapability(p.Engine); !ok {
-		errs = append(errs, fmt.Sprintf("moteur inconnu : %q", p.Engine))
-	}
+	var warns []string
 	if p.Name == "" {
 		errs = append(errs, "le profil n'a pas de nom")
 	}
+	if p.Engine == "" {
+		errs = append(errs, "le champ engine est vide")
+	} else if _, ok := engineutil.GetEngineCapability(p.Engine); !ok {
+		// Moteur hors de la matrice de compatibilité (ex: freeway-gate) : ce n'est
+		// pas une erreur pour un profil simple — la validité réelle est vérifiée à
+		// l'activation via engine.Get. On avertit simplement l'opérateur.
+		warns = append(warns, fmt.Sprintf(
+			"moteur %q absent de la matrice de compatibilité hybride (profil simple uniquement)", p.Engine))
+	}
 	return ValidationResult{
-		OK:     len(errs) == 0,
-		Errors: errs,
+		OK:       len(errs) == 0,
+		Errors:   errs,
+		Warnings: warns,
 	}
 }
 

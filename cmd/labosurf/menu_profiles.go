@@ -17,11 +17,14 @@ package main
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
+	"labosurf/internal/engcfg"
 	"labosurf/internal/engine"
 	"labosurf/internal/engineutil"
 	"labosurf/internal/profile"
+	"labosurf/internal/srvcfg"
 	"labosurf/internal/store"
 )
 
@@ -177,6 +180,8 @@ func profileDetailMenu(p *profile.Profile) {
 }
 
 // profileCreateSimpleMenu crée un nouveau profil simple.
+// Les paramètres sont pré-remplis depuis l'engcfg existant et srvcfg
+// (port configuré), afin que le profil créé soit immédiatement utilisable.
 func profileCreateSimpleMenu() {
 	clearScreen()
 	printCentralHeader()
@@ -184,12 +189,13 @@ func profileCreateSimpleMenu() {
 	fmt.Println("  ── ➕ NOUVEAU PROFIL SIMPLE ──────────────────────────────")
 	fmt.Println()
 	fmt.Println("  Moteurs disponibles :")
-	engines := []string{
+	knownEngines := []string{
 		store.EngineXray, store.EngineHysteria, store.EngineHysteria2,
 		store.EngineSlowDNS, store.EngineDNSTT, store.EngineSSH,
 		store.EngineTUIC, store.EngineWireGuard, store.EngineUDP,
+		"freeway-gate",
 	}
-	for i, e := range engines {
+	for i, e := range knownEngines {
 		fmt.Printf("    [%d] %s\n", i+1, e)
 	}
 	fmt.Println()
@@ -201,14 +207,8 @@ func profileCreateSimpleMenu() {
 	}
 	engineName := mc
 	var num int
-	if _, err := fmt.Sscanf(mc, "%d", &num); err == nil && num >= 1 && num <= len(engines) {
-		engineName = engines[num-1]
-	}
-
-	if _, ok := engineutil.GetEngineCapability(engineName); !ok {
-		fmt.Println("  " + red("✗ Moteur inconnu : "+engineName))
-		pauseMenu()
-		return
+	if _, err := fmt.Sscanf(mc, "%d", &num); err == nil && num >= 1 && num <= len(knownEngines) {
+		engineName = knownEngines[num-1]
 	}
 
 	fmt.Printf("  Nom du profil : ")
@@ -227,14 +227,85 @@ func profileCreateSimpleMenu() {
 	fmt.Printf("  Description (optionnel) : ")
 	desc := strings.TrimSpace(promptLine(""))
 
-	p := profile.NewSimple(name, desc, engineName, nil)
+	// Pré-remplissage des paramètres depuis engcfg (config précédente) + srvcfg (port).
+	params := preFillParams(engineName)
+
+	p := profile.NewSimple(name, desc, engineName, params)
 	if err := profile.Save(&p); err != nil {
 		fmt.Println("  " + red("✗ "+err.Error()))
+		pauseMenu()
+		return
+	}
+
+	fmt.Println("  " + green("✔ Profil créé : "+p.Name+" ("+p.ID+")"))
+	if len(params) > 0 {
+		fmt.Println("  " + dim("  Paramètres pré-remplis depuis la configuration actuelle :"))
+		for _, k := range sortedKeys(params) {
+			fmt.Printf("      %-20s = %s\n", k, params[k])
+		}
+		fmt.Println("  " + dim("  Modifiez-les avec [E] si nécessaire."))
 	} else {
-		fmt.Println("  " + green("✔ Profil créé : "+p.Name+" ("+p.ID+")"))
-		fmt.Println("      Éditez ses paramètres avec [E] dans le détail du profil.")
+		fmt.Println("  " + dim("  Aucune configuration antérieure — éditez les paramètres avec [E]."))
 	}
 	pauseMenu()
+}
+
+// preFillParams construit une map de paramètres pré-remplis pour un moteur
+// à partir du dernier engcfg sauvegardé et du port dans srvcfg.
+// Cette fonction ne lit que les données persistées — jamais de valeurs inventées.
+func preFillParams(engineName string) map[string]string {
+	params := map[string]string{}
+
+	ep, _ := engcfg.Load(engineName)
+
+	// Port depuis srvcfg (source la plus fiable car appliquée au moteur).
+	if prof, err := srvcfg.Load(); err == nil {
+		if port := prof.Port(engineName); port > 0 {
+			params["port"] = strconv.Itoa(port)
+		}
+	}
+
+	// Paramètres spécifiques selon le moteur depuis l'engcfg persisté.
+	switch engineName {
+	case store.EngineSlowDNS, store.EngineDNSTT:
+		if v := ep.Get("backend", ""); v != "" {
+			params["backend"] = v
+		}
+		if v := ep.Values["jitter_ms"]; v != "" {
+			params["jitter_ms"] = v
+		}
+	case store.EngineSSH:
+		if v := ep.Get("run_as_user", ""); v != "" {
+			params["run_as_user"] = v
+		}
+	case store.EngineHysteria:
+		if v := ep.Get("backend", ""); v != "" {
+			params["backend"] = v
+		}
+	case store.EngineTUIC:
+		if v := ep.Get("congestion_control", ""); v != "" {
+			params["congestion_control"] = v
+		}
+	case store.EngineUDP:
+		if v := ep.Values["portal_enabled"]; v != "" {
+			params["portal_enabled"] = v
+		}
+		if v := ep.Get("portal_listen", ""); v != "" {
+			params["portal_listen"] = v
+		}
+		if v := ep.Get("auth_mode", ""); v != "" {
+			params["auth_mode"] = v
+		}
+	case store.EngineXray:
+		if v := ep.Get("network", ""); v != "" {
+			params["network"] = v
+		}
+		if v := ep.Get("security", ""); v != "" {
+			params["security"] = v
+		}
+	}
+
+	return params
 }
 
 // profileCreateHybridMenu crée un nouveau profil hybride.

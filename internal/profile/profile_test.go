@@ -216,12 +216,25 @@ func TestValidateSimpleOK(t *testing.T) {
 	}
 }
 
-// TestValidateSimpleBadEngine vérifie qu'un moteur inconnu génère une erreur.
-func TestValidateSimpleBadEngine(t *testing.T) {
-	p := profile.NewSimple("Test", "", "moteur-imaginaire", nil)
+// TestValidateSimpleNoEngine vérifie qu'un moteur vide génère une erreur.
+func TestValidateSimpleNoEngine(t *testing.T) {
+	p := profile.NewSimple("Test", "", "", nil)
 	res := profile.Validate(p)
 	if res.OK {
-		t.Fatal("Validate(moteur inconnu) devrait échouer")
+		t.Fatal("Validate(engine vide) devrait échouer")
+	}
+}
+
+// TestValidateSimpleUnknownEngineWarns vérifie qu'un moteur hors matrice génère un avertissement (pas une erreur).
+func TestValidateSimpleUnknownEngineWarns(t *testing.T) {
+	p := profile.NewSimple("Test", "", "moteur-imaginaire", nil)
+	res := profile.Validate(p)
+	// Valide (pas d'erreur) — l'existence réelle est vérifiée à l'activation.
+	if !res.OK {
+		t.Fatalf("Validate(moteur hors matrice) devrait réussir (avec avertissement) : %v", res.Errors)
+	}
+	if len(res.Warnings) == 0 {
+		t.Fatal("Validate(moteur hors matrice) devrait produire un avertissement")
 	}
 }
 
