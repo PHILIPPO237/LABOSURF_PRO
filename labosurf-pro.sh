@@ -35,7 +35,15 @@ export BIN_PATH CONFIG_DIR GITHUB_REPO GITHUB_RELEASE
 # Installer version banner: best-effort from the enclosing git checkout
 # (dev/test use), falls back to "dev" for a standalone downloaded script
 # (the normal curl|bash case) — never a fabricated version number.
-INSTALLER_VERSION="$(git -C "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')"
+# BASH_SOURCE is an EMPTY array when the script arrives via stdin (the
+# documented `curl ... | sudo bash` install path, or `bash -s`), so
+# BASH_SOURCE[0] must never be dereferenced unguarded under `set -u` —
+# doing so aborted every curl|bash install with "unbound variable"
+# before reaching the license screen.
+INSTALLER_VERSION=""
+if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
+  INSTALLER_VERSION="$(git -C "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')"
+fi
 [[ -n "$INSTALLER_VERSION" ]] || INSTALLER_VERSION="dev"
 
 # Moteurs autonomes (binaires LABOSURF qui supervisent le vrai moteur tierce).
@@ -875,6 +883,15 @@ main() {
 # labosurf-pro.sh depuis test_install_license_gate.sh), main() ne se lance
 # pas automatiquement : le test peut alors appeler activate_license
 # directement, en isolation, sans lancer une installation complète.
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+#
+# L'ancien garde comparait "${BASH_SOURCE[0]}" à "${0}" : en plus de
+# planter (BASH_SOURCE[0] non défini sous `set -u` quand le script vient
+# d'un pipe), la comparaison aurait de toute façon échoué une fois
+# "corrigée" naïvement — pour `curl ... | sudo bash`, BASH_SOURCE[0] est
+# une chaîne vide alors que $0 vaut "bash", donc main() ne se serait
+# jamais lancé. L'idiome `(return 0 2>/dev/null)` détecte correctement
+# le sourcing sans dépendre de BASH_SOURCE : `return` hors fonction ou
+# script sourcé échoue, qu'il s'agisse d'un fichier ou d'un flux stdin.
+if ! (return 0 2>/dev/null); then
   main "$@"
 fi
