@@ -64,6 +64,8 @@ func runCentralMenu() {
 		fmt.Println("  " + cyan("8") + " ⬆️  MISE À JOUR DU PROJET")
 		fmt.Println("      Vérifie la dernière release GitHub et propose son installation.")
 		fmt.Println("  " + cyan("9") + " ℹ️ À PROPOS")
+		fmt.Println("  " + red("10") + " 🗑️  DÉSINSTALLATION DU PROJET")
+		fmt.Println("      Affiche ce qui serait supprimé et demande confirmation avant toute action.")
 		fmt.Println("  " + dim("0") + " ❌ QUITTER")
 		fmt.Println()
 
@@ -87,6 +89,8 @@ func runCentralMenu() {
 			runUpdateMenu()
 		case "9":
 			printAbout()
+		case "10":
+			runUninstallMenu()
 		case "0":
 			fmt.Println()
 			fmt.Println(green("LABOSURF PRO") + " arrêté.")

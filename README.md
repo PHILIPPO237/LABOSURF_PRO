@@ -278,6 +278,20 @@ systemctl start labosurf-<moteur>
 
 ## Désinstallation
 
+### Désinstallation guidée (`cmd/labosurf`, menu `[10]`)
+
+Le menu central (option `[10] DÉSINSTALLATION DU PROJET`) détecte l'installation réelle (binaires, unités systemd, `/opt/labosurf`, `/etc/labosurf`) et propose trois portées, chacune affichée en détail **avant** toute action :
+
+- `[1]` Programme uniquement (binaires + services + binaires tiers) — données conservées.
+- `[2]` Programme + configuration d'exécution — données (comptes, services, accès, profils, reçus) conservées.
+- `[3]` Désinstallation complète, y compris `/etc/labosurf`.
+
+Protections : les modes `[2]`/`[3]` exigent la saisie exacte de `DESINSTALLER` (jamais un simple Entrée) ; un récapitulatif final liste précisément ce qui sera supprimé/conservé et avertit si la clé de licence locale sera perdue ; le mode `[3]` propose une sauvegarde (`tar.gz`) **vérifiée avant** toute suppression — si la sauvegarde échoue, rien n'est supprimé. Chaque suppression est validée contre les répertoires connus de l'installation (jamais un chemin arbitraire). Ne modifie jamais le LICENSE MAKER (outil privé séparé) ni le dépôt Git source.
+
+⚠️ Même limitation que SERVICES/ACCÈS/MISE À JOUR : vit dans `cmd/labosurf`, non installé par `labosurf-pro.sh` aujourd'hui — voir [limitation connue](#limitation-connue-gestionnaire-multi-moteurs).
+
+### Désinstallation manuelle
+
 Il n'y a pas de script de désinstallation global. Retrait manuel :
 
 ```bash
@@ -415,6 +429,7 @@ LABOSURF_PRO/
 - Le lien `Service.ProfileID` est une **référence seule** : il n'applique pas automatiquement les paramètres techniques du profil visé — l'opérateur doit activer ce profil séparément (menu PROFILS NOMMÉS) pour que `Configure()` en tienne compte.
 - Aucun moteur ne possède d'état « activé/désactivé » indépendant d'« installé »/« démarré » (`engine.EngineStatus{Installed, Running}` uniquement) : la disponibilité d'un moteur pour créer un Service se base sur `Installed`, faute d'un état dédié.
 - **Mise à jour du gestionnaire** (`[8]`, `internal/selfupdate`) : même limitation que ci-dessus — vit dans `cmd/labosurf`, pas installé par l'installateur standard.
+- **Désinstallation guidée** (`[10]`, `internal/uninstall`) : même limitation que ci-dessus.
 - Voir `docs/M1_SERVICE_ACCESS_IMPLEMENTATION.md`, `docs/M2_ACCESS_SECRETS_CLIENTCFG_IMPLEMENTATION.md`, `docs/M3_GRANTS_TO_ACCESS_SERVER_CONFIG_IMPLEMENTATION.md` et `docs/M4_UI_SERVICES_SUBSCRIBERS_ACCESS_IMPLEMENTATION.md` pour le détail complet de conception, tests et limites de ce nouveau modèle.
 
 Voir `ETUDE_PROTOCOLes_COMPATIBLES.md` pour l'analyse complète (matrice de compatibilité, [CONFIRMÉ]/[COMPATIBLE THÉORIQUEMENT]/[À TESTER]/[INCOMPATIBLE]/[NÉCESSITE NOUVELLE ARCHITECTURE]) et `ARCHITECTURE_HYBRIDES.md` pour l'architecture de chaînage détaillée.
