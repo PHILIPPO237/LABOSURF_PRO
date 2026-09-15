@@ -248,7 +248,22 @@ Moteur → Profil (optionnel) → Service → Abonné → Accès → Configurati
 
 ## Mise à jour
 
-Il n'existe pas de mécanisme de mise à jour automatique (le menu interactif option `[6] MISE À JOUR` est un simple rappel, pas un updater). Pour mettre à jour :
+### Mise à jour du gestionnaire (`cmd/labosurf`, menu `[8]`)
+
+Le menu central (option `[8] MISE À JOUR DU PROJET`) vérifie la dernière release GitHub officielle du dépôt (`internal/selfupdate`, API `releases/latest`), compare son tag à la version compilée dans le binaire, et propose l'installation **après confirmation explicite** :
+
+- Aucune installation automatique — l'administrateur doit répondre `o` au prompt.
+- Le binaire téléchargé est vérifié par SHA-256 contre le `SHA256SUMS` de la release avant tout remplacement (même convention que `labosurf-pro.sh` et les moteurs).
+- Sauvegarde de l'ancien binaire avant remplacement atomique, puis vérification que le nouveau binaire s'exécute (`labosurf version`) — rollback automatique vers la sauvegarde en cas d'échec.
+- Ne touche jamais aux données, configurations, services, accès ou licences — uniquement le fichier binaire courant.
+
+⚠️ Comme les écrans SERVICES/ACCÈS (voir plus haut), cette fonctionnalité vit dans `cmd/labosurf` (« labosurf-mgr »), **non installé par `labosurf-pro.sh`** sur une installation VPS standard aujourd'hui — voir [limitation connue](#limitation-connue-gestionnaire-multi-moteurs).
+
+La version affichée (`labosurf version`) est injectée au build depuis le tag git qui nomme chaque release (`.github/workflows/release.yml`, `-ldflags -X main.version=`) — aucune deuxième source de version n'existe.
+
+### Mise à jour des moteurs installés par l'installateur standard
+
+Aucun mécanisme de mise à jour automatique n'existe pour les moteurs eux-mêmes (binaire installé par `labosurf-pro.sh`). Pour mettre à jour :
 
 ```bash
 # Ré-exécuter l'installateur (redemande une clé d'activation neuve)
@@ -399,6 +414,7 @@ LABOSURF_PRO/
 - `MaxDevices`/`MaxConnections`/`MaxSourceIPs` sur un Accès sont des **limites déclaratives**, non appliquées au niveau réseau par ce dépôt (contrairement à l'ancien `Account.MaxIPs`/`MaxConnections`, activement contrôlés par le moteur UDP).
 - Le lien `Service.ProfileID` est une **référence seule** : il n'applique pas automatiquement les paramètres techniques du profil visé — l'opérateur doit activer ce profil séparément (menu PROFILS NOMMÉS) pour que `Configure()` en tienne compte.
 - Aucun moteur ne possède d'état « activé/désactivé » indépendant d'« installé »/« démarré » (`engine.EngineStatus{Installed, Running}` uniquement) : la disponibilité d'un moteur pour créer un Service se base sur `Installed`, faute d'un état dédié.
+- **Mise à jour du gestionnaire** (`[8]`, `internal/selfupdate`) : même limitation que ci-dessus — vit dans `cmd/labosurf`, pas installé par l'installateur standard.
 - Voir `docs/M1_SERVICE_ACCESS_IMPLEMENTATION.md`, `docs/M2_ACCESS_SECRETS_CLIENTCFG_IMPLEMENTATION.md`, `docs/M3_GRANTS_TO_ACCESS_SERVER_CONFIG_IMPLEMENTATION.md` et `docs/M4_UI_SERVICES_SUBSCRIBERS_ACCESS_IMPLEMENTATION.md` pour le détail complet de conception, tests et limites de ce nouveau modèle.
 
 Voir `ETUDE_PROTOCOLes_COMPATIBLES.md` pour l'analyse complète (matrice de compatibilité, [CONFIRMÉ]/[COMPATIBLE THÉORIQUEMENT]/[À TESTER]/[INCOMPATIBLE]/[NÉCESSITE NOUVELLE ARCHITECTURE]) et `ARCHITECTURE_HYBRIDES.md` pour l'architecture de chaînage détaillée.

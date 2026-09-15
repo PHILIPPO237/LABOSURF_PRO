@@ -38,6 +38,20 @@ jobs:
           (cd engines/udp && go vet ./... && \
             go test -timeout 2m -run '^TestLicense|TestIntegration|TestCross|TestInstall|TestClient|TestNoEmbedded|TestRunLicense|TestReadToken|TestServerAuth|TestServerRejects|TestServerBlocks|TestServerMax|TestServerBlocks|TestStartup|TestActivation|TestClientHas|TestNoEmbedded|TestStore|TestFormat|TestBuild|TestPortal' .)
 
+      - name: Determine release version
+        id: version
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            RELEASE_TAG="${GITHUB_REF_NAME}"
+          else
+            RELEASE_TAG="${{ github.event.inputs.version }}"
+            if [[ -z "$RELEASE_TAG" ]]; then
+              RELEASE_TAG="dev-$(date +%Y%m%d-%H%M%S)"
+            fi
+          fi
+          echo "tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+
       - name: Read public verification key
         id: key
         run: |
@@ -67,15 +81,20 @@ jobs:
           done
 
       - name: Build manager and engine binaries
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
         run: |
           set -euo pipefail
           cd "${{ github.workspace }}"
           mkdir -p dist
-          # Gestionnaire multi-moteurs (cmd/labosurf)
+          # Gestionnaire multi-moteurs (cmd/labosurf) — version injectée depuis
+          # le même tag qui nomme cette release GitHub (internal/selfupdate
+          # compare cette valeur à la dernière release publiée).
           for goos_arch in linux/amd64 linux/arm64 android/arm64; do
             GOOS="${goos_arch%/*}"; GOARCH="${goos_arch#*/}"
             CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" \
               go build -trimpath \
+              -ldflags "-X main.version=${RELEASE_TAG}" \
               -o "dist/labosurf-mgr-${GOOS}-${GOARCH}" \
               ./cmd/labosurf
           done
@@ -122,16 +141,9 @@ jobs:
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
         run: |
           set -euo pipefail
-          if [[ "${{ github.event_name }}" == "push" ]]; then
-            RELEASE_TAG="${GITHUB_REF_NAME}"
-          else
-            RELEASE_TAG="${INPUT_VERSION}"
-            if [[ -z "$RELEASE_TAG" ]]; then
-              RELEASE_TAG="dev-$(date +%Y%m%d-%H%M%S)"
-            fi
-          fi
           echo "Création de la release: ${RELEASE_TAG}"
           gh release create "${RELEASE_TAG}" dist/* \
             --generate-notes \

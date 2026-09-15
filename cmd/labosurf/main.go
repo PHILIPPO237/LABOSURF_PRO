@@ -26,6 +26,13 @@ import (
 	_ "labosurf/internal/engineudp"
 )
 
+// version est injectée au build des releases via
+// -ldflags "-X main.version=vX.Y.Z" (voir .github/workflows/release.yml),
+// depuis le même tag git qui nomme la release GitHub — source unique de
+// vérité, jamais une deuxième numérotation. "dev" en build locale
+// (go build sans ldflags) : jamais une version fabriquée.
+var version = "dev"
+
 func main() {
 	// Charge les moteurs hybrides composés par l'utilisateur (s'ils existent).
 	_ = engineutil.EnsureHybridsRegistered()
@@ -57,6 +64,8 @@ func main() {
 		}
 	case "menu":
 		runCentralMenu()
+	case "version", "-v", "--version":
+		fmt.Println("LABOSURF PRO " + version)
 	case "help", "-h", "--help":
 		printRootUsage()
 	default:
@@ -159,6 +168,7 @@ func printRootUsage() {
 	fmt.Println("LABOSURF PRO — Plateforme multi-moteurs")
 	fmt.Println()
 	fmt.Println("Usage :")
+	fmt.Println("  labosurf version                     afficher la version installée")
 	fmt.Println("  labosurf engine list                 lister les moteurs")
 	fmt.Println("  labosurf engine status <name>        état d'un moteur")
 	fmt.Println("  labosurf engine start <name>         démarrer un moteur")

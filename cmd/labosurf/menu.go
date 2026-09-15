@@ -61,6 +61,8 @@ func runCentralMenu() {
 		fmt.Println("      Instances nommées d'un moteur ou d'une chaîne hybride (simple/hybride).")
 		fmt.Println("  " + cyan("7") + " 🔑 ACCÈS")
 		fmt.Println("      Droits d'un abonné sur un service : quota, appareils, expiration.")
+		fmt.Println("  " + cyan("8") + " ⬆️  MISE À JOUR DU PROJET")
+		fmt.Println("      Vérifie la dernière release GitHub et propose son installation.")
 		fmt.Println("  " + cyan("9") + " ℹ️ À PROPOS")
 		fmt.Println("  " + dim("0") + " ❌ QUITTER")
 		fmt.Println()
@@ -81,6 +83,8 @@ func runCentralMenu() {
 			runServiceMenu()
 		case "7":
 			runAccessMenu()
+		case "8":
+			runUpdateMenu()
 		case "9":
 			printAbout()
 		case "0":
