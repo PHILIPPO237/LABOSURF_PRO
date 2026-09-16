@@ -942,10 +942,24 @@ func runServerContext(
 		)
 	}
 
-	// NOTE : aucune vérification de licence au démarrage du serveur.
-	// La licence LABOSURF PRO ouvre l'ACCÈS AU SCRIPT D'INSTALLATION
-	// (vérifiée une seule fois par labosurf-pro.sh). Une fois installé,
-	// le serveur démarre librement : ni activation.json, ni machine.id.
+	// NOTE : aucune vérification de licence au démarrage du serveur, SAUF
+	// le drapeau de révocation posé par un heartbeat précédent (voir
+	// heartbeat.go) — décision explicite : une révocation détectée en
+	// cours d'exécution n'interrompt JAMAIS le service en cours, elle
+	// bloque seulement le PROCHAIN démarrage, pour ne pas couper les
+	// clients finaux de l'opérateur sans préavis.
+	if isLicenseRevoked("") {
+		return fmt.Errorf(
+			"licence révoquée par l'administrateur (voir %s) — service non démarré",
+			licenseRevokedFlagPath(""),
+		)
+	}
+
+	// La licence LABOSURF PRO ouvre par ailleurs l'ACCÈS AU SCRIPT
+	// D'INSTALLATION (vérifiée une seule fois par labosurf-pro.sh). Une
+	// fois installé, le serveur démarre librement : ni activation.json,
+	// ni machine.id.
+	go runLicenseHeartbeat(ctx)
 
 	// Le store est la source de vérité des comptes. S'il contient au moins
 	// un compte, il fait autorité sur la section auth de la configuration.

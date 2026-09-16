@@ -16,10 +16,10 @@ package license
 // est introuvable — voir locateLicenseMaker().
 
 import (
-	"bufio"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -78,13 +78,22 @@ func buildLicenseMaker(t *testing.T, sourceDir string) string {
 	return out
 }
 
-// tokenPattern reconnaît un jeton base64url(payload).base64url(signature)
-// tel qu'imprimé par LABOSURF_LICENSE_MAKER sur sa propre ligne de sortie.
-var tokenPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$`)
+// keyPattern reconnaît la clé de 40 caractères "LABOSURF..." affichée à
+// l'opérateur (seule valeur désormais présentée comme étant à transmettre
+// à l'utilisateur — voir generator.go côté LICENSE_MAKER, mission "modèle
+// professionnel de licence" : le jeton signé complet n'est plus imprimé,
+// il reste interne (registre local + serveur central).
+var keyPattern = regexp.MustCompile(`LABOSURF[A-Za-z0-9!@#$%^&*_+=?-]{32}`)
 
 // runLicenseMakerGenerate pilote le menu interactif du binaire (aucune
 // interface non-interactive n'existe dans LABOSURF_LICENSE_MAKER) pour
-// générer UNE licence, et retourne le jeton imprimé sur stdout.
+// générer UNE licence, et retourne le jeton signé complet correspondant.
+//
+// Le jeton n'étant plus imprimé sur stdout (seule la clé de 40 caractères
+// l'est désormais), ce jeton est lu directement dans licenses.json — le
+// registre local que LICENSE_MAKER écrit toujours, exactement comme le
+// ferait un test qui inspecterait cette même source de vérité après une
+// génération réelle.
 func runLicenseMakerGenerate(t *testing.T, binPath, workDir, id, comment string) string {
 	t.Helper()
 
@@ -108,18 +117,28 @@ func runLicenseMakerGenerate(t *testing.T, binPath, workDir, id, comment string)
 		t.Fatalf("exécution de LABOSURF_LICENSE_MAKER échouée : %v\n--- sortie ---\n%s", err, output)
 	}
 
-	scanner := bufio.NewScanner(strings.NewReader(stripANSI(string(output))))
-	var token string
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if tokenPattern.MatchString(line) {
-			token = line
-			break
-		}
+	clean := stripANSI(string(output))
+	if !keyPattern.MatchString(clean) {
+		t.Fatalf("aucune clé de 40 caractères trouvée dans la sortie de LABOSURF_LICENSE_MAKER :\n%s", output)
 	}
-	if token == "" {
-		t.Fatalf("aucun jeton trouvé dans la sortie de LABOSURF_LICENSE_MAKER :\n%s", output)
+
+	registryRaw, err := os.ReadFile(filepath.Join(workDir, "licenses.json"))
+	if err != nil {
+		t.Fatalf("lecture licenses.json : %v\n--- sortie du Maker ---\n%s", err, output)
 	}
+	var reg struct {
+		Licenses map[string]struct {
+			Token string `json:"token"`
+		} `json:"licenses"`
+	}
+	if err := json.Unmarshal(registryRaw, &reg); err != nil {
+		t.Fatalf("licenses.json invalide : %v", err)
+	}
+	entry, ok := reg.Licenses[id]
+	if !ok || entry.Token == "" {
+		t.Fatalf("aucun jeton trouvé dans licenses.json pour %q :\n%s", id, registryRaw)
+	}
+	token := entry.Token
 	return token
 }
 

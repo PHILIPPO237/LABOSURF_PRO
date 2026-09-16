@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto/ed25519"
-	"encoding/base64"
 	"encoding/hex"
 	"os"
 	"path/filepath"
@@ -96,8 +95,7 @@ func TestLicenseActivationWindow(t *testing.T) {
 
 	sig := ed25519.Sign(testSignKey, payload)
 
-	token := base64.RawURLEncoding.EncodeToString(payload) + "." +
-		base64.RawURLEncoding.EncodeToString(sig)
+	token := encodeActivationKey(payload, sig)
 
 	tmpDir := t.TempDir()
 
@@ -118,8 +116,8 @@ func TestLicenseTampered(t *testing.T) {
 		t.Fatal("format de jeton invalide")
 	}
 
-	parts[1] = "deadbeef0000000000000000000000000000000000000000000000000000dead"
-	tampered := parts[0] + "." + parts[1]
+	badSig := encodeKeyBlock(make([]byte, ed25519.SignatureSize))
+	tampered := activationKeyPrefix + parts[0] + "@" + badSig
 
 	_, status, _ := VerifyLicenseToken(tampered)
 
@@ -391,10 +389,13 @@ func TestLicenseRegistryPersistence(t *testing.T) {
 	}
 }
 
+// splitTokenParts retourne [payloadBlock, signatureBlock] d'un jeton
+// "LABOSURF-<payload>@<signature>" (préfixe déjà retiré du 1er élément).
 func splitTokenParts(token string) []string {
-	for i := 0; i < len(token); i++ {
-		if token[i] == '.' {
-			return []string{token[:i], token[i+1:]}
+	body := strings.TrimPrefix(token, activationKeyPrefix)
+	for i := 0; i < len(body); i++ {
+		if body[i] == '@' {
+			return []string{body[:i], body[i+1:]}
 		}
 	}
 

@@ -111,11 +111,18 @@ run_maker_generate() {
 }
 
 MAKER_OUTPUT="$(run_maker_generate "GATE-TEST-VALID")"
-VALID_TOKEN="$(printf '%s' "$MAKER_OUTPUT" | tr -d '\r' | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' | grep -E '^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$' | head -1)"
+# Depuis la mission "modèle professionnel de licence" : seule la clé de
+# 40 caractères est imprimée à l'opérateur, plus le jeton signé complet
+# (qui reste interne : registre local licenses.json + serveur central).
+# On le lit donc directement dans licenses.json, comme le ferait toute
+# inspection réelle de ce que LICENSE_MAKER vient de produire.
+VALID_TOKEN="$(grep -o '"token": *"[^"]*"' "$MAKER_WORKDIR/licenses.json" 2>/dev/null | head -1 | sed 's/.*"token": *"\([^"]*\)"/\1/')"
 if [[ -z "$VALID_TOKEN" ]]; then
-  fail "aucun jeton trouvé dans la sortie de LABOSURF_LICENSE_MAKER"
+  fail "aucun jeton trouvé dans licenses.json pour GATE-TEST-VALID"
   echo "--- sortie du License Maker ---"
   echo "$MAKER_OUTPUT"
+  echo "--- licenses.json ---"
+  cat "$MAKER_WORKDIR/licenses.json" 2>&1
   exit 1
 fi
 ok "jeton valide obtenu du vrai LABOSURF_LICENSE_MAKER (ID=GATE-TEST-VALID)"
@@ -131,13 +138,14 @@ package main
 
 import (
 	"crypto/ed25519"
-	"encoding/base64"
+	"encoding/base32"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 	"time"
+	"unicode"
 )
 
 type LicenseData struct {
@@ -170,7 +178,29 @@ func main() {
 		os.Exit(1)
 	}
 	sig := ed25519.Sign(priv, payload)
-	fmt.Print(base64.RawURLEncoding.EncodeToString(payload) + "." + base64.RawURLEncoding.EncodeToString(sig))
+	fmt.Print(encodeActivationKey(payload, sig))
+}
+
+// encodeActivationKey/encodeKeyBlock : même algorithme que LICENSE_MAKER
+// (license.go) et internal/license/license.go — voir ces fichiers pour
+// la documentation complète du format "clé d'activation".
+func encodeActivationKey(payload, signature []byte) string {
+	return "LABOSURF-" + encodeKeyBlock(payload) + "@" + encodeKeyBlock(signature)
+}
+
+func encodeKeyBlock(b []byte) string {
+	raw := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b)
+	var out strings.Builder
+	for i, r := range raw {
+		if i > 0 && i%5 == 0 {
+			out.WriteByte('-')
+		}
+		if (i/5)%2 == 1 {
+			r = unicode.ToLower(r)
+		}
+		out.WriteRune(r)
+	}
+	return out.String()
 }
 EOF
 EXPIRED_BIN="$WORK/gen_expired"

@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto/ed25519"
-	"encoding/base64"
 	"os"
 	"path/filepath"
 	"testing"
@@ -40,8 +39,7 @@ func signExpiredToken(t *testing.T, id string) string {
 
 	sig := ed25519.Sign(testSignKey, payload)
 
-	return base64.RawURLEncoding.EncodeToString(payload) + "." +
-		base64.RawURLEncoding.EncodeToString(sig)
+	return encodeActivationKey(payload, sig)
 }
 
 // --- Une licence valide ouvre UNE installation ---

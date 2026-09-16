@@ -41,9 +41,15 @@ var ErrAlreadyUsed = errors.New("licence déjà utilisée pour une installation"
 var ErrNoReceipt = errors.New("aucun reçu d'installation")
 
 // InstallReceipt est la preuve qu'une licence a ouvert une installation.
+// Key (la clé de 40 caractères "LABOSURF...") est optionnelle et absente
+// des reçus écrits avant le serveur central de licences — champ additif,
+// rétrocompatible : un reçu sans Key fonctionne exactement comme avant
+// (1 clé = 1 installation via le fichier reçu), il n'envoie simplement
+// pas de heartbeat au serveur central.
 type InstallReceipt struct {
 	LicenseID   string `json:"license_id"`
 	InstalledAt string `json:"installed_at"`
+	Key         string `json:"key,omitempty"`
 }
 
 // receiptPathFor retourne le chemin du reçu pour un ID de licence.
@@ -106,6 +112,7 @@ func UseLicense(token, receiptDir string, registry *LicenseRegistry) (LicenseDat
 	rec := InstallReceipt{
 		LicenseID:   data.ID,
 		InstalledAt: time.Now().UTC().Format(time.RFC3339),
+		Key:         data.Key,
 	}
 
 	raw, err := json.MarshalIndent(rec, "", "  ")

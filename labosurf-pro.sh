@@ -30,7 +30,16 @@ RECEIPT_DIR="${CONFIG_DIR}"
 GITHUB_REPO="PHILIPPO237/LABOSURF_PRO"
 GITHUB_RELEASE="https://github.com/${GITHUB_REPO}/releases/latest/download"
 TELEGRAM_CONTACT="https://t.me/Philippo237"
-export BIN_PATH CONFIG_DIR GITHUB_REPO GITHUB_RELEASE
+# LICENSE_SERVER_URL : serveur central de licences (labosurf-license-server,
+# voir dépôt LABOSURF_LICENSE_MAKER/server). Quand renseigné, l'opérateur
+# saisit UNIQUEMENT la clé de 40 caractères "LABOSURF..." déjà produite par
+# LICENSE_MAKER — ce script résout lui-même cette clé en jeton signé complet
+# en interrogeant le serveur (voir activate_license()), sans qu'aucun jeton
+# ne soit à récupérer ni transmettre séparément. Laisser vide désactive le
+# serveur central : l'ancien comportement 100% hors-ligne (saisie directe du
+# jeton complet, vérification Ed25519 locale uniquement) reste inchangé.
+LICENSE_SERVER_URL="${LABOSURF_LICENSE_SERVER_URL:-}"
+export BIN_PATH CONFIG_DIR GITHUB_REPO GITHUB_RELEASE LICENSE_SERVER_URL
 
 # Installer version banner: best-effort from the enclosing git checkout
 # (dev/test use), falls back to "dev" for a standalone downloaded script
@@ -573,14 +582,54 @@ activate_license() {
   # Cette fonction ne fait QUE de la présentation par rapport à la version
   # précédente : la logique cryptographique ci-dessous est strictement
   # identique (voir AUDIT_INSTALL_LICENSE_GATE.md).
-  local token id
+  local entered token id key=""
   print_license_screen
   printf '  %b1 key = 1 installation %s valid for 3 hours after issuance%b\n' "$DIM" "$BULLET" "$RESET"
   echo
   printf '  %b>%b ' "$CYAN" "$RESET"
-  token="$(read_license_token)"
+  entered="$(read_license_token)"
   echo
-  [[ -n "${token//[[:space:]]/}" ]] || die "No activation key provided. Installation cancelled."
+  [[ -n "${entered//[[:space:]]/}" ]] || die "No activation key provided. Installation cancelled."
+
+  if [[ -n "$LICENSE_SERVER_URL" ]]; then
+    # Modèle "clé unique" : l'opérateur a saisi la clé de 40 caractères
+    # "LABOSURF..." — jamais un jeton. Ce script la résout en jeton signé
+    # complet en interrogeant le serveur central ; la vérification
+    # cryptographique Ed25519 ci-dessous reste ensuite STRICTEMENT
+    # identique à avant, sur le jeton ainsi obtenu (voir server/main.go
+    # côté LABOSURF_LICENSE_MAKER : le serveur ne fait qu'une vérification
+    # d'état — PENDING/ACTIVE/EXPIRED/REVOKED —, jamais de vérification de
+    # signature, qui reste entièrement locale, ici, comme avant).
+    key="$entered"
+    # PAS de -f ici volontairement : le serveur répond un JSON exploitable
+    # (avec une raison précise, ex. "already used"/"revoked") même sur un
+    # code HTTP 4xx — -f l'aurait fait traiter comme un échec réseau et
+    # aurait perdu ce message (trouvé lors des tests de bout en bout : le
+    # refus "déjà utilisée" ressortait à tort comme "serveur injoignable").
+    # Seul un VRAI problème de connexion (curl lui-même en erreur : DNS,
+    # connexion refusée, timeout) doit produire le message ci-dessous.
+    local resp curl_rc
+    resp="$(curl -sS -m 15 -X POST "${LICENSE_SERVER_URL%/}/v1/activate" \
+      -H 'Content-Type: application/json' \
+      --data "{\"key\":\"${key}\"}" 2>&1)"
+    curl_rc=$?
+    if [[ $curl_rc -ne 0 ]]; then
+      die "Could not reach the license server (${LICENSE_SERVER_URL}). Activation requires connectivity to the central license server."
+    fi
+    if ! printf '%s' "$resp" | grep -q '"ok"[[:space:]]*:[[:space:]]*true'; then
+      local reason
+      reason="$(printf '%s' "$resp" | sed -n 's/.*"reason"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+      [[ -n "$reason" ]] || reason="rejected by the license server"
+      die "Activation key rejected: ${reason}"
+    fi
+    token="$(printf '%s' "$resp" | sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+    [[ -n "$token" ]] || die "License server accepted the key but returned no token (unexpected)."
+  else
+    # Serveur central non configuré : comportement d'origine, entièrement
+    # hors-ligne — l'opérateur saisit directement le jeton signé complet.
+    token="$entered"
+  fi
+
   id="$(LABOSURF_LICENSE_PUBKEY="$(cat "$PUBKEY_PATH")" \
     "$BIN_PATH" license verify -token "$token" -print-id)" \
     || die "Activation key rejected (invalid signature or 3-hour validation window expired)."
@@ -590,7 +639,7 @@ activate_license() {
   if [[ -f "${RECEIPT_DIR}/.install_${safe_id}.receipt" ]]; then
     die "This license already authorized an installation (1 key = 1 install). Request a NEW license."
   fi
-  printf '{"license_id":"%s","installed_at":"%s"}\n' "$id" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  printf '{"license_id":"%s","installed_at":"%s","key":"%s"}\n' "$id" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$key" \
     > "${RECEIPT_DIR}/.install_${safe_id}.receipt.tmp"
   chmod 0600 "${RECEIPT_DIR}/.install_${safe_id}.receipt.tmp"
   mv "${RECEIPT_DIR}/.install_${safe_id}.receipt.tmp" "${RECEIPT_DIR}/.install_${safe_id}.receipt"
@@ -622,6 +671,14 @@ ReadWritePaths=/etc/labosurf
 [Install]
 WantedBy=multi-user.target
 UNIT
+  # Transmet LICENSE_SERVER_URL au service (heartbeat périodique — voir
+  # engines/udp/server.go). Ajouté après le heredoc (lui volontairement
+  # non interpolé) plutôt que dans le heredoc lui-même, pour ne rien
+  # changer au reste du fichier unit. Absent si non configuré : le
+  # service démarre alors exactement comme avant (aucun heartbeat).
+  if [[ -n "$LICENSE_SERVER_URL" ]]; then
+    sed -i "/^\[Service\]/a Environment=LABOSURF_LICENSE_SERVER_URL=${LICENSE_SERVER_URL}" "$SERVICE_PATH"
+  fi
   chmod 0644 "$SERVICE_PATH"
   systemctl daemon-reload
   systemctl enable labosurf.service >/dev/null
