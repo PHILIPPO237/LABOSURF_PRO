@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"strings"
@@ -200,7 +201,7 @@ func TestIntegration2_TamperedSignatureRejected(t *testing.T) {
 	}
 
 	// Modifie la signature
-	tamperedToken := activationKeyPrefix + parts[0] + "@" + encodeKeyBlock(make([]byte, ed25519.SignatureSize))
+	tamperedToken := parts[0] + "." + base64.RawURLEncoding.EncodeToString(make([]byte, ed25519.SignatureSize))
 
 	_, status, err := VerifyLicenseToken(tamperedToken)
 	if err == nil {
@@ -228,7 +229,7 @@ func TestIntegration3_TamperedPayloadRejected(t *testing.T) {
 	}
 
 	// Décode le payload, le modifie, et ré-encode
-	payloadBytes, err := decodeKeyBlock(parts[0])
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
 		t.Fatalf("décodage payload : %v", err)
 	}
@@ -246,7 +247,7 @@ func TestIntegration3_TamperedPayloadRejected(t *testing.T) {
 		t.Fatalf("marshal : %v", err)
 	}
 
-	tamperedToken := activationKeyPrefix + encodeKeyBlock(tamperedPayload) + "@" + parts[1]
+	tamperedToken := base64.RawURLEncoding.EncodeToString(tamperedPayload) + "." + parts[1]
 
 	_, status, err := VerifyLicenseToken(tamperedToken)
 	if err == nil {
@@ -376,10 +377,9 @@ func TestIntegration8_InvalidFormatRejected(t *testing.T) {
 		token string
 	}{
 		{"vide", ""},
-		{"sans prefixe/separateur", "abc123"},
-		{"prefixe sans separateur", activationKeyPrefix + "ABCDEFGH"},
-		{"payload invalide", activationKeyPrefix + "!!!@" + encodeKeyBlock([]byte("sig"))},
-		{"signature invalide", activationKeyPrefix + encodeKeyBlock([]byte(`{"id":"x"}`)) + "@!!!"},
+		{"sans point", "abc123"},
+		{"payload invalide", "!!!." + base64.RawURLEncoding.EncodeToString([]byte("sig"))},
+		{"signature invalide", base64.RawURLEncoding.EncodeToString([]byte(`{"id":"x"}`)) + ".!!!"},
 	}
 
 	for _, tt := range tests {
@@ -408,20 +408,16 @@ func TestIntegration9_TokenFormatIdentical(t *testing.T) {
 		t.Fatalf("CreateLicense : %v", err)
 	}
 
-	// Le token doit commencer par le préfixe "clé d'activation" et
-	// contenir exactement 2 blocs séparés par "@".
-	if !strings.HasPrefix(token, activationKeyPrefix) {
-		t.Fatalf("le token doit commencer par %q, obtenu %q", activationKeyPrefix, token)
-	}
+	// Le token doit avoir exactement 2 parties séparées par un point.
 	parts := splitTokenParts(token)
 	if len(parts) != 2 {
-		t.Fatalf("le token doit contenir exactement 2 blocs séparés par '@', obtenu %d", len(parts))
+		t.Fatalf("le token doit contenir exactement 2 parties séparées par '.', obtenu %d", len(parts))
 	}
 
-	// La première partie (payload) doit être du base32 (groupé) valide
-	payloadBytes, err := decodeKeyBlock(parts[0])
+	// La première partie (payload) doit être du base64url valide
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
-		t.Fatalf("payload pas du base32 valide : %v", err)
+		t.Fatalf("payload pas du base64url valide : %v", err)
 	}
 
 	// Le payload décodé doit être du JSON valide
@@ -434,10 +430,10 @@ func TestIntegration9_TokenFormatIdentical(t *testing.T) {
 		t.Fatalf("ID dans le payload : attendu %q, obtenu %q", data.ID, decodedData.ID)
 	}
 
-	// La deuxième partie (signature) doit être du base32 (groupé) valide
-	sigBytes, err := decodeKeyBlock(parts[1])
+	// La deuxième partie (signature) doit être du base64url valide
+	sigBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		t.Fatalf("signature pas du base32 valide : %v", err)
+		t.Fatalf("signature pas du base64url valide : %v", err)
 	}
 
 	// La signature doit faire 64 bytes (Ed25519)

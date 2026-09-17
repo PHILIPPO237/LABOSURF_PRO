@@ -23,9 +23,9 @@ import (
 )
 
 // signTestToken construit un jeton LABOSURF PRO valide (même format que
-// LABOSURF_LICENSE_MAKER : LABOSURF-<payload base32>@<signature base32>,
-// voir license.EncodeActivationKey) avec une paire de clés ed25519
-// JETABLE, jamais une clé de production.
+// LABOSURF_LICENSE_MAKER : base64url(payload).base64url(signature), voir
+// license.EncodeActivationKey) avec une paire de clés ed25519 JETABLE,
+// jamais une clé de production.
 func signTestToken(t *testing.T, id string, window time.Duration, priv ed25519.PrivateKey) string {
 	t.Helper()
 	data := license.LicenseData{

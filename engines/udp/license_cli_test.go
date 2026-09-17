@@ -238,12 +238,11 @@ func TestLicenseVerifyTampered(t *testing.T) {
 	// Altérer un caractère au MILIEU de la partie signature du jeton.
 	//
 	// Pourquoi pas le dernier caractère ? Une signature Ed25519 fait 64 octets
-	// soit 103 caractères base32 (groupés par blocs de 5 avec des tirets
-	// décoratifs). Le dernier caractère n'encode que peu de bits utiles : le
-	// modifier peut laisser les octets décodés identiques, ce qui rendait ce
-	// test intermittent (flaky). Un caractère au milieu de la signature
-	// modifie toujours les octets réellement vérifiés.
-	sep := strings.Index(token, "@")
+	// soit 86 caractères base64url. Le dernier caractère n'encode que 2 bits
+	// utiles : le modifier peut laisser les octets décodés identiques, ce qui
+	// rendait ce test intermittent (flaky). Un caractère au milieu de la
+	// signature modifie toujours les octets réellement vérifiés.
+	sep := strings.Index(token, ".")
 	if sep < 0 || len(token)-sep < 8 {
 		t.Fatalf("format de jeton inattendu : %q", token)
 	}

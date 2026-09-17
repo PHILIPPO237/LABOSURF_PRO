@@ -138,14 +138,13 @@ package main
 
 import (
 	"crypto/ed25519"
-	"encoding/base32"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 	"time"
-	"unicode"
 )
 
 type LicenseData struct {
@@ -178,29 +177,7 @@ func main() {
 		os.Exit(1)
 	}
 	sig := ed25519.Sign(priv, payload)
-	fmt.Print(encodeActivationKey(payload, sig))
-}
-
-// encodeActivationKey/encodeKeyBlock : même algorithme que LICENSE_MAKER
-// (license.go) et internal/license/license.go — voir ces fichiers pour
-// la documentation complète du format "clé d'activation".
-func encodeActivationKey(payload, signature []byte) string {
-	return "LABOSURF-" + encodeKeyBlock(payload) + "@" + encodeKeyBlock(signature)
-}
-
-func encodeKeyBlock(b []byte) string {
-	raw := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b)
-	var out strings.Builder
-	for i, r := range raw {
-		if i > 0 && i%5 == 0 {
-			out.WriteByte('-')
-		}
-		if (i/5)%2 == 1 {
-			r = unicode.ToLower(r)
-		}
-		out.WriteRune(r)
-	}
-	return out.String()
+	fmt.Print(base64.RawURLEncoding.EncodeToString(payload) + "." + base64.RawURLEncoding.EncodeToString(sig))
 }
 EOF
 EXPIRED_BIN="$WORK/gen_expired"

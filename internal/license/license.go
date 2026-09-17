@@ -2,7 +2,7 @@ package license
 
 import (
 	"crypto/ed25519"
-	"encoding/base32"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-	"unicode"
 )
 
 // ============================================================
@@ -110,23 +109,15 @@ func verifySignature(payload []byte, signature []byte, pub ed25519.PublicKey) bo
 	return ed25519.Verify(pub, payload, signature)
 }
 
-// activationKeyPrefix identifie le format "clé d'activation" du jeton :
-// LABOSURF-<payload en base32 groupé>@<signature en base32 groupée>.
-// Remplace l'ancien base64url(payload).base64url(signature) — voir
-// encodeActivationKey côté LABOSURF_LICENSE_MAKER (license.go) pour le
-// producteur exact de ce format. Changement de PRÉSENTATION uniquement :
-// les octets JSON signés et la vérification Ed25519 ci-dessous sont
-// strictement inchangés.
-const activationKeyPrefix = "LABOSURF-"
-
-// encodeActivationKey et encodeKeyBlock ne sont pas utilisés par le
-// chemin de vérification (LABOSURF_PRO ne génère pas de licences en
-// production — voir README), mais sont conservés ici, identiques à
-// LICENSE_MAKER/license.go, pour que les tests de ce paquet puissent
-// construire des jetons valides sans dupliquer l'algorithme d'encodage
-// dans license_test.go.
+// encodeActivationKey encode un jeton en base64url(payload).base64url(signature)
+// — le plus court des deux habillages pour un même contenu signé (voir
+// demande du 2026-09-17 : réduire la longueur du jeton). Non utilisé par
+// le chemin de vérification (LABOSURF_PRO ne génère pas de licences en
+// production), conservé pour que les tests de ce paquet et de cmd/labosurf
+// (EncodeActivationKey, export public) construisent des jetons de test
+// sans dupliquer l'algorithme d'encodage.
 func encodeActivationKey(payload, signature []byte) string {
-	return activationKeyPrefix + encodeKeyBlock(payload) + "@" + encodeKeyBlock(signature)
+	return base64.RawURLEncoding.EncodeToString(payload) + "." + base64.RawURLEncoding.EncodeToString(signature)
 }
 
 // EncodeActivationKey est l'export public d'encodeActivationKey, pour les
@@ -136,48 +127,19 @@ func EncodeActivationKey(payload, signature []byte) string {
 	return encodeActivationKey(payload, signature)
 }
 
-func encodeKeyBlock(b []byte) string {
-	raw := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b)
-	var out strings.Builder
-	out.Grow(len(raw) + len(raw)/5)
-	for i, r := range raw {
-		if i > 0 && i%5 == 0 {
-			out.WriteByte('-')
-		}
-		if (i/5)%2 == 1 {
-			r = unicode.ToLower(r)
-		}
-		out.WriteRune(r)
-	}
-	return out.String()
-}
-
-// decodeKeyBlock inverse encodeKeyBlock (LICENSE_MAKER/license.go) :
-// retire les tirets décoratifs, uniformise la casse (l'alternance de
-// casse par bloc n'est que cosmétique) puis décode le base32.
-func decodeKeyBlock(s string) ([]byte, error) {
-	clean := strings.ToUpper(strings.ReplaceAll(s, "-", ""))
-	return base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(clean)
-}
-
 // ParseLicenseToken decodes a license token without verifying its signature.
 func ParseLicenseToken(token string) (LicenseData, []byte, error) {
-	t := strings.TrimSpace(token)
-	if len(t) <= len(activationKeyPrefix) || !strings.EqualFold(t[:len(activationKeyPrefix)], activationKeyPrefix) {
-		return LicenseData{}, nil, fmt.Errorf("format de jeton invalide (préfixe %q attendu)", activationKeyPrefix)
+	parts := strings.Split(strings.TrimSpace(token), ".")
+	if len(parts) != 2 {
+		return LicenseData{}, nil, fmt.Errorf("format de jeton invalide (attendu: payload.signature)")
 	}
 
-	blocks := strings.SplitN(t[len(activationKeyPrefix):], "@", 2)
-	if len(blocks) != 2 {
-		return LicenseData{}, nil, fmt.Errorf("format de jeton invalide (attendu: payload@signature)")
-	}
-
-	payload, err := decodeKeyBlock(blocks[0])
+	payload, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
 		return LicenseData{}, nil, fmt.Errorf("décodage payload : %w", err)
 	}
 
-	signature, err := decodeKeyBlock(blocks[1])
+	signature, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
 		return LicenseData{}, nil, fmt.Errorf("décodage signature : %w", err)
 	}

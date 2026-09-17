@@ -3,6 +3,7 @@ package license
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"os"
@@ -43,12 +44,11 @@ func makeToken(t *testing.T, data LicenseData, signKey ed25519.PrivateKey) strin
 	return encodeActivationKey(payload, sig)
 }
 
-// splitActivationKey sépare un jeton "LABOSURF-<payload>@<signature>" en
-// ses deux blocs, pour les tests qui doivent altérer l'un des deux.
-func splitActivationKey(t *testing.T, token string) (payloadBlock, sigBlock string) {
+// splitActivationKey sépare un jeton "payload.signature" en ses deux
+// parties, pour les tests qui doivent altérer l'une des deux.
+func splitActivationKey(t *testing.T, token string) (payloadPart, sigPart string) {
 	t.Helper()
-	body := strings.TrimPrefix(token, activationKeyPrefix)
-	parts := strings.SplitN(body, "@", 2)
+	parts := strings.SplitN(token, ".", 2)
 	if len(parts) != 2 {
 		t.Fatalf("jeton mal formé pour le test : %q", token)
 	}
@@ -87,9 +87,9 @@ func TestVerifyToken_BadSignature(t *testing.T) {
 	testVerifyKey = pub
 
 	token := makeToken(t, validData("T-BAD-SIG", 2*time.Hour), priv)
-	payloadBlock, _ := splitActivationKey(t, token)
-	badSig := encodeKeyBlock(make([]byte, ed25519.SignatureSize)) // signature à zéro, forcément invalide
-	badToken := activationKeyPrefix + payloadBlock + "@" + badSig
+	payloadPart, _ := splitActivationKey(t, token)
+	badSig := base64.RawURLEncoding.EncodeToString(make([]byte, ed25519.SignatureSize)) // signature à zéro, forcément invalide
+	badToken := payloadPart + "." + badSig
 
 	if _, err := VerifyToken(badToken); err == nil {
 		t.Fatal("signature corrompue acceptée")
@@ -104,13 +104,13 @@ func TestVerifyToken_TamperedPayload(t *testing.T) {
 	testVerifyKey = pub
 
 	token := makeToken(t, validData("T-TAMPER", 2*time.Hour), priv)
-	_, sigBlock := splitActivationKey(t, token)
-	payloadBytes, _ := decodeKeyBlock(strings.SplitN(strings.TrimPrefix(token, activationKeyPrefix), "@", 2)[0])
+	payloadPart, sigPart := splitActivationKey(t, token)
+	payloadBytes, _ := base64.RawURLEncoding.DecodeString(payloadPart)
 	var d LicenseData
 	_ = json.Unmarshal(payloadBytes, &d)
 	d.ID = "MODIFIED-ID"
 	newPayload, _ := json.Marshal(d)
-	tampered := activationKeyPrefix + encodeKeyBlock(newPayload) + "@" + sigBlock
+	tampered := base64.RawURLEncoding.EncodeToString(newPayload) + "." + sigPart
 
 	if _, err := VerifyToken(tampered); err == nil {
 		t.Fatal("payload modifié accepté")
@@ -153,7 +153,7 @@ func TestVerifyToken_WrongProduct(t *testing.T) {
 
 func TestVerifyToken_Malformed(t *testing.T) {
 	useTempDataDir(t)
-	for _, tok := range []string{"", "not-a-token", "onlyonepart", "LABOSURF-", "LABOSURF-ABCDEFGH", "LABOSURF-ABCDEFGH@", "LABOSURF-!!!@ABCDEFGH"} {
+	for _, tok := range []string{"", "not-a-token", "onlyonepart", "part1.part2.part3", "eyJpZCI6IlRFU1QifQ."} {
 		if _, err := VerifyToken(tok); err == nil {
 			t.Fatalf("jeton malformé accepté : %q", tok)
 		}
@@ -169,8 +169,8 @@ func TestVerifyToken_EmptySignature(t *testing.T) {
 	testVerifyKey = pub
 
 	token := makeToken(t, validData("T-EMPTY-SIG", 2*time.Hour), priv)
-	payloadBlock, _ := splitActivationKey(t, token)
-	noSig := activationKeyPrefix + payloadBlock + "@"
+	payloadPart, _ := splitActivationKey(t, token)
+	noSig := payloadPart + "."
 
 	if _, err := VerifyToken(noSig); err == nil {
 		t.Fatal("signature vide acceptée")
@@ -265,7 +265,7 @@ func TestParseLicenseToken(t *testing.T) {
 }
 
 func TestParseLicenseToken_BadFormat(t *testing.T) {
-	for _, tok := range []string{"not-a-token", "onlyonepart", "LABOSURF-", "LABOSURF-ABCDEFGH", "LABOSURF-!!!@ABCDEFGH"} {
+	for _, tok := range []string{"not-a-token", "onlyonepart", "part1.part2.part3"} {
 		if _, _, err := ParseLicenseToken(tok); err == nil {
 			t.Fatalf("format invalide accepté : %q", tok)
 		}

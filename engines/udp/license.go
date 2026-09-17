@@ -3,7 +3,7 @@ package main
 import (
 	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/base32"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-	"unicode"
 )
 
 // ============================================================
@@ -22,10 +21,8 @@ import (
 // Le License Maker possède la clé PRIVÉE.
 // LABOSURF PRO possède uniquement la clé PUBLIQUE.
 //
-// Format du jeton ("clé d'activation", voir encodeActivationKey) :
-//   LABOSURF-<payload JSON en base32 groupé>@<signature Ed25519 en base32 groupée>
-// Remplace l'ancien base64url(payload).base64url(signature) — présentation
-// uniquement, les octets signés et la vérification Ed25519 sont inchangés.
+// Format du jeton :
+//   base64url(payload JSON).base64url(signature Ed25519)
 //
 // Le payload signé contient une clé LABOSURF de exactement 40 caractères.
 // La licence ouvre l'ACCÈS AU SCRIPT D'INSTALLATION, pas au serveur :
@@ -251,6 +248,10 @@ func CreateLicense(id, comment string) (string, License, error) {
 
 	signature := ed25519.Sign(priv, payload)
 
+	// base64url(payload).base64url(signature) : le plus court des deux
+	// habillages pour ce même contenu signé (demande du 2026-09-17 —
+	// réduire la longueur du jeton). Présentation uniquement : les octets
+	// JSON signés et la signature Ed25519 sont inchangés.
 	token := encodeActivationKey(payload, signature)
 
 	return token, License{
@@ -259,63 +260,23 @@ func CreateLicense(id, comment string) (string, License, error) {
 	}, nil
 }
 
-// activationKeyPrefix identifie le format "clé d'activation" du jeton.
-// Voir encodeActivationKey/decodeKeyBlock ci-dessous ; même format que
-// internal/license (les deux copies doivent rester en phase).
-const activationKeyPrefix = "LABOSURF-"
-
-// encodeActivationKey formate un jeton dans le style "clé d'activation"
-// (LABOSURF-XXXXX-XXXXX@XXXXX-XXXXX). Présentation uniquement : les
-// octets JSON signés et la signature Ed25519 sont inchangés.
 func encodeActivationKey(payload, signature []byte) string {
-	return activationKeyPrefix + encodeKeyBlock(payload) + "@" + encodeKeyBlock(signature)
-}
-
-// encodeKeyBlock encode des octets bruts en base32 (sans padding),
-// regroupés par blocs de 5 caractères séparés par des tirets, en casse
-// alternée par bloc. Alphabet restreint à A-Z, 2-7 et '-' : aucun
-// caractère à risque pour un shell ou une URL.
-func encodeKeyBlock(b []byte) string {
-	raw := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b)
-	var out strings.Builder
-	out.Grow(len(raw) + len(raw)/5)
-	for i, r := range raw {
-		if i > 0 && i%5 == 0 {
-			out.WriteByte('-')
-		}
-		if (i/5)%2 == 1 {
-			r = unicode.ToLower(r)
-		}
-		out.WriteRune(r)
-	}
-	return out.String()
-}
-
-// decodeKeyBlock inverse encodeKeyBlock : retire les tirets décoratifs,
-// uniformise la casse (cosmétique uniquement) puis décode le base32.
-func decodeKeyBlock(s string) ([]byte, error) {
-	clean := strings.ToUpper(strings.ReplaceAll(s, "-", ""))
-	return base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(clean)
+	return base64.RawURLEncoding.EncodeToString(payload) + "." + base64.RawURLEncoding.EncodeToString(signature)
 }
 
 // ParseLicenseToken décode un jeton sans vérifier sa signature.
 func ParseLicenseToken(token string) (License, error) {
-	t := strings.TrimSpace(token)
-	if len(t) <= len(activationKeyPrefix) || !strings.EqualFold(t[:len(activationKeyPrefix)], activationKeyPrefix) {
+	parts := strings.Split(strings.TrimSpace(token), ".")
+	if len(parts) != 2 {
 		return License{}, ErrLicenseFormat
 	}
 
-	blocks := strings.SplitN(t[len(activationKeyPrefix):], "@", 2)
-	if len(blocks) != 2 {
-		return License{}, ErrLicenseFormat
-	}
-
-	payload, err := decodeKeyBlock(blocks[0])
+	payload, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
 		return License{}, fmt.Errorf("%w : payload", ErrLicenseFormat)
 	}
 
-	signature, err := decodeKeyBlock(blocks[1])
+	signature, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
 		return License{}, fmt.Errorf("%w : signature", ErrLicenseFormat)
 	}
