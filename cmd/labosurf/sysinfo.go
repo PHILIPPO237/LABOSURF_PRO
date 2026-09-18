@@ -320,126 +320,86 @@ func padRight(s string, width int) string {
 	return s + strings.Repeat(" ", width-vis)
 }
 
-// printSystemPanel affiche le panneau d'informations système + comptes +
-// moteurs + ports sous le header central sur 4 colonnes compactes.
-// Robustesse : tout échec d'accès renvoie "N/D" sans bloquer.
+// printSystemPanel affiche, À L'INTÉRIEUR de la boîte du dashboard
+// (voir dashLine/dashTwoCol dans menu.go), le système, la licence, les
+// moteurs et les compteurs services/accès/comptes — condensé pour
+// tenir sur un écran de téléphone (voir maquette validée le
+// 2026-09-18). Robustesse inchangée : tout échec d'accès retombe sur
+// "N/D" sans jamais bloquer le menu. Les DONNÉES affichées sont
+// strictement les mêmes qu'avant ; seule la mise en page change.
 func printSystemPanel() {
 	prof, _ := srvcfg.Load()
-	total, active, expired := accountSummary()
+	total, _, expired := accountSummary()
+	svcActive, accActive := serviceAccessSummary()
 
-	// Largeur de colonne pour 4 colonnes dans ~78 colonnes.
-	const cw = 18 // 2 indent + 4×18 + 3 séparateurs = 77
+	fmt.Println(dashMid())
 
-	// Ligne de statut rapide (comptes/licence/connexions), à la manière
-	// d'un tableau de bord : puces colorées, un coup d'œil suffit.
-	licenceState := red("● non activée")
+	// SYS : OS abrégé, coeurs CPU, RAM, disque, uptime — une seule ligne.
+	osShort := truncateEllipsis(readOSInfo(), 12)
+	sysLine := yellow("SYS") + " " + osShort +
+		" " + itoa(runtime.NumCPU()) + "c " + blue(readRAM()) +
+		" DSK " + readDisk() + " UP " + dim(readUptime())
+	fmt.Println(dashLine(sysLine))
+
+	// LIC : statut d'activation + IP — puce verte/rouge, jamais confondue
+	// avec un état ONLINE/OFFLINE (notion distincte, gérée par le serveur
+	// central de licences, pas par ce dashboard local).
+	licenceState := red("● désactivée")
 	if licenseActivated() {
 		licenceState = green("● activée")
 	}
-	expiredState := dim(itoa(expired))
-	if expired > 0 {
-		expiredState = yellow(itoa(expired))
-	}
-	fmt.Println()
-	fmt.Println(
-		"  " + green("●") + " Comptes " + itoa(total) +
-			"   " + yellow("●") + " Expirés " + expiredState +
-			"   " + cyan("●") + " Connexions " + readActiveConns() +
-			"   " + "Licence " + licenceState,
-	)
+	ip := truncateEllipsis(networkAddress(), 15)
+	licLine := yellow("LIC") + " " + licenceState + "  " + yellow("IP") + " " + blue(ip)
+	fmt.Println(dashLine(licLine))
 
-	svcActive, accActive := serviceAccessSummary()
-	fmt.Println(
-		"  " + cyan("●") + " Services actifs " + itoa(svcActive) +
-			"   " + cyan("●") + " Accès actifs " + itoa(accActive),
-	)
+	fmt.Println(dashMid())
+	fmt.Println(dashLine(yellow(bold("MOTEURS"))))
 
-	fmt.Println(dim("  ── SYSTÈME ─────────────────────────────────────────"))
-
-	// 8 items système → 2 lignes de 4 colonnes.
-	sysItems := []struct{ label, value string; ok bool }{
-		{"OS", readOSInfo(), true},
-		{"Noyau", readKernel(), true},
-		{"CPU", itoa(runtime.NumCPU())+"c " + runtime.GOARCH, true},
-		{"Modele", readCPUBrand(), true},
-		{"RAM", readRAM(), true},
-		{"Swap", readSwap(), false},
-		{"Disk", readDisk(), true},
-		{"Load", readLoad(), true},
-	}
-	for row := 0; row < 2; row++ {
-		var cells []string
-		for col := 0; col < 4; col++ {
-			it := sysItems[row*4+col]
-			cell := padRight(dim(it.label+" ")+it.value, cw)
-			cells = append(cells, cell)
-		}
-		fmt.Println("  " + strings.Join(cells, " "))
-	}
-
-	fmt.Println(dim("  ── RÉSEAU & UTILISATEURS ───────────────────────────"))
-
-	// 8 items réseau → 2 lignes de 4 colonnes.
-	netItems := []struct{ label, value string; ok bool }{
-		{"IP", networkAddress(), true},
-		{"Uptime", readUptime(), true},
-		{"Comptes", itoa(total), true},
-		{"Actifs", itoa(active), true},
-		{"Conn.", readActiveConns(), false},
-		{"Arch", runtime.GOARCH, true},
-		{"Version", "PRO", true},
-		{"Ports", itoa(countSrvPorts(prof)), true},
-	}
-	for row := 0; row < 2; row++ {
-		var cells []string
-		for col := 0; col < 4; col++ {
-			it := netItems[row*4+col]
-			cell := padRight(dim(it.label+" ")+it.value, cw)
-			cells = append(cells, cell)
-		}
-		fmt.Println("  " + strings.Join(cells, " "))
-	}
-
-	fmt.Println(dim("  ── MOTEURS & PORTS ─────────────────────────────────"))
 	names := engine.Names()
 	sort.Strings(names)
 	if len(names) == 0 {
-		fmt.Println("  Aucun moteur enregistré.")
+		fmt.Println(dashLine(dim("Aucun moteur enregistré.")))
 	} else {
-		// 3 colonnes par ligne pour les moteurs.
-		for i := 0; i < len(names); i += 3 {
-			var cells []string
-			for j := 0; j < 3; j++ {
-				if i+j >= len(names) {
-					break
-				}
-				n := names[i+j]
-				e, err := engine.Get(n)
-				if err != nil {
-					continue
-				}
-				st := e.Status()
-				state := "·"
-				colored := false
-				switch {
-				case st.Running:
-					state = green("●")
-					colored = true
-				case st.Installed:
-					state = dim("○")
-				}
-				cell := fmt.Sprintf("%-7s %s v%-5s p%d", n, state, e.Version(), prof.Port(n))
-				if colored {
-					cell = green(n) + " " + state + fmt.Sprintf(" v%-5s p%d", e.Version(), prof.Port(n))
-				} else {
-					cell = dim(n) + " " + state + fmt.Sprintf(" v%-5s p%d", e.Version(), prof.Port(n))
-				}
-				cells = append(cells, padRight(cell, 25))
+		for i := 0; i < len(names); i += 2 {
+			left := engineCell(names[i], prof)
+			right := ""
+			if i+1 < len(names) {
+				right = engineCell(names[i+1], prof)
 			}
-			fmt.Println("  " + strings.Join(cells, " "))
+			fmt.Println(dashTwoCol(left, right))
 		}
 	}
-	fmt.Println()
+
+	fmt.Println(dashMid())
+	countsLine := cyan("SVC") + " " + itoa(svcActive) +
+		"  " + cyan("ACC") + " " + itoa(accActive) +
+		"  " + cyan("CPT") + " " + itoa(total)
+	if expired > 0 {
+		countsLine += "  " + yellow("EXP") + " " + yellow(itoa(expired))
+	}
+	fmt.Println(dashLine(countsLine))
+}
+
+// engineCell formate une cellule "● nom pPORT" pour la grille MOTEURS
+// (2 colonnes) — nom tronqué à 10 caractères pour garantir que la
+// cellule tient toujours dans sa moitié de boîte (dashTwoCol), quel
+// que soit le nom (y compris un hybride composé, potentiellement long).
+func engineCell(n string, prof srvcfg.Profile) string {
+	e, err := engine.Get(n)
+	if err != nil {
+		return dim(truncateEllipsis(n, 10))
+	}
+	st := e.Status()
+	dot := dim("·")
+	label := dim(truncateEllipsis(n, 10))
+	switch {
+	case st.Running:
+		dot = green("●")
+		label = green(truncateEllipsis(n, 10))
+	case st.Installed:
+		dot = dim("○")
+	}
+	return dot + " " + label + " " + blue("p"+itoa(prof.Port(n)))
 }
 
 // countSrvPorts compte les ports explicitement configurés dans le profil.

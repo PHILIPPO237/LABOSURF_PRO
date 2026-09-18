@@ -39,33 +39,20 @@ func pauseMenu() {
 func clearScreen() { fmt.Print("\033[2J\033[H") }
 
 // runCentralMenu est le point d'entrée du menu interactif central.
+//
+// Dashboard compact en une seule boîte (≤ dashW colonnes) : titre, puis
+// système/licence, moteurs, compteurs services/accès/comptes, puis le
+// menu lui-même en grille 2 colonnes — tout tient sur un écran de
+// téléphone standard, sans scroller (voir maquette validée le
+// 2026-09-18). Les 9 options et leur numéro/lettre sont strictement les
+// mêmes qu'avant ; seule la présentation change — aucune description
+// longue imprimée ici, elle reste dans chaque sous-menu.
 func runCentralMenu() {
 	for {
 		clearScreen()
-		printCentralHeader()
-		printSystemPanel()
-		fmt.Println()
-		fmt.Println("  ── MENU CENTRAL ──────────────────────────────────────")
-		fmt.Println()
-		fmt.Println("  " + green("1") + " 🔧 GESTION DES MOTEURS")
-		fmt.Println("      Installez, démarrez, arrêtez et configurez chaque moteur VPN.")
-		fmt.Println("  " + green("2") + " 👥 GESTION DES UTILISATEURS")
-		fmt.Println("      Comptes, durées, blocages — rattachés à un ou plusieurs moteurs.")
-		fmt.Println("  " + cyan("3") + " 🖥️  ÉTAT GLOBAL")
-		fmt.Println("      Récapitulatif de tous les moteurs (installés / en cours).")
-		fmt.Println("  " + cyan("4") + " ⚙️  PROFIL SERVEUR")
-		fmt.Println("      IP publique, domaines et ports par moteur (configs serveur + client).")
-		fmt.Println("  " + cyan("5") + " 📋 PROFILS NOMMÉS")
-		fmt.Println("      Gérez les configurations nommées par moteur (créer, activer, dupliquer).")
-		fmt.Println("  " + cyan("6") + " 🧩 SERVICES")
-		fmt.Println("      Instances nommées d'un moteur ou d'une chaîne hybride (simple/hybride).")
-		fmt.Println("  " + cyan("7") + " 🔑 ACCÈS")
-		fmt.Println("      Droits d'un abonné sur un service : quota, appareils, expiration.")
-		fmt.Println("  " + cyan("9") + " ℹ️ À PROPOS")
-		fmt.Println("  " + dim("0") + " ❌ QUITTER")
-		fmt.Println()
+		printDashboard()
 
-		choice := promptLine(green("LABOSURF PRO ►") + " Choisissez une option : ")
+		choice := promptLine(magenta("LABOSURF PRO ►") + " Choix : ")
 		switch choice {
 		case "1":
 			runEngineMenu()
@@ -95,21 +82,52 @@ func runCentralMenu() {
 }
 
 // ── Header central ─────────────────────────────────────────
+//
+// printCentralHeader reste utilisé par tous les SOUS-menus (moteur,
+// utilisateurs, services, accès, profil...) : bandeau compact, un seul
+// cadre, jamais de lettres ASCII géantes (l'ancien bandeau de 6 lignes
+// x ~68 colonnes cassait sur un terminal Termux portrait étroit).
+// L'écran d'accueil, lui, utilise printDashboard() ci-dessous, qui
+// intègre son propre titre dans la même boîte que le reste.
 func printCentralHeader() {
 	fmt.Println()
-	fmt.Println(dim("  ════════════════════════════════════════════════════════════════════════════════"))
-	fmt.Println()
-	fmt.Println(green("  ██╗      █████╗ ██████╗  ██████╗ ███████╗██╗   ██╗██████╗ ███████╗"))
-	fmt.Println(green("  ██║     ██╔══██╗██╔══██╗██╔═══██╗██╔════╝██║   ██║██╔══██╗██╔════╝"))
-	fmt.Println(green("  ██║     ███████║██████╔╝██║   ██║███████╗██║   ██║██████╔╝█████╗  "))
-	fmt.Println(green("  ██║     ██╔══██║██╔══██╗██║   ██║╚════██║██║   ██║██╔══██╗██╔══╝  "))
-	fmt.Println(green("  ███████╗██║  ██║██████╔╝╚██████╔╝███████║╚██████╔╝██║  ██║██║     "))
-	fmt.Println(green("  ╚══════╝╚═╝  ╚═╝╚═════╝  ╚═════╝ ╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚═╝     "))
-	fmt.Println()
-	fmt.Println(dim("  ════════════════════════════════════════════════════════════════════════════════"))
-	fmt.Println(dim("  LABORATOIRE DU FREESURF  •  CONÇU PAR PHILIPPO237  •  MULTI-MOTEURS"))
-	fmt.Println(dim("  ════════════════════════════════════════════════════════════════════════════════"))
+	fmt.Println(dashTop())
+	fmt.Println(dashLine(magenta(bold("⚡ LABOSURF PRO")) + dim(" — FreeSurf")))
+	fmt.Println(dashBottom())
 }
+
+// printDashboard affiche l'écran d'accueil complet dans une boîte
+// unique : titre, système/licence, moteurs, compteurs, puis le menu en
+// grille — voir la maquette validée (audit du 2026-09-18). Purement de
+// la présentation : aucune donnée ici n'est recalculée différemment de
+// ce que printSystemPanel lisait déjà.
+func printDashboard() {
+	fmt.Println()
+	fmt.Println(dashTop())
+	fmt.Println(dashLine(magenta(bold("⚡ LABOSURF PRO")) + dim(" — FreeSurf")))
+	printSystemPanel()
+
+	fmt.Println(dashMid())
+	fmt.Println(dashLine(yellow(bold("MENU"))))
+	fmt.Println(dashTwoCol(menuItem("1", "🔧", "Moteurs"), menuItem("2", "👥", "Comptes")))
+	fmt.Println(dashTwoCol(menuItem("3", "🖥", "État global"), menuItem("4", "⚙", "Profil srv")))
+	fmt.Println(dashTwoCol(menuItem("5", "📋", "Profils"), menuItem("6", "🧩", "Services")))
+	fmt.Println(dashTwoCol(menuItem("7", "🔑", "Accès"), menuItem("9", "ℹ", "À propos")))
+	fmt.Println(dashLine(menuItem("0", "❌", "Quitter")))
+	fmt.Println(dashBottom())
+}
+
+// menuItem formate une entrée de menu "N icône libellé" avec un
+// numéro/lettre en surbrillance — utilisé uniquement pour la grille du
+// dashboard (dashTwoCol/dashLine) ; la logique de sélection elle-même
+// (switch sur choice) est totalement inchangée.
+func menuItem(key, icon, label string) string {
+	return cWhite(key) + " " + icon + " " + label
+}
+
+const cWhiteCode = "\033[1;37m"
+
+func cWhite(s string) string { return cWhiteCode + s + cReset }
 
 // ── Gestion des moteurs ────────────────────────────────────
 func runEngineMenu() {
@@ -1094,12 +1112,15 @@ func printAbout() {
 
 // ── Helpers d'affichage ────────────────────────────────────
 const (
-	cReset  = "\033[0m" // reset
-	cDim    = "\033[2m" // gris
-	cGreen  = "\033[1;32m"
-	cRed    = "\033[1;31m"
-	cCyan   = "\033[1;36m"
-	cYellow = "\033[1;33m"
+	cReset   = "\033[0m" // reset
+	cDim     = "\033[2m" // gris
+	cGreen   = "\033[1;32m"
+	cRed     = "\033[1;31m"
+	cCyan    = "\033[1;36m"
+	cYellow  = "\033[1;33m"
+	cMagenta = "\033[1;35m"
+	cBlue    = "\033[1;34m"
+	cBold    = "\033[1m"
 )
 
 func green(s string) string       { return cGreen + s + cReset }
@@ -1107,8 +1128,56 @@ func red(s string) string         { return cRed + s + cReset }
 func cyan(s string) string        { return cCyan + s + cReset }
 func dim(s string) string         { return cDim + s + cReset }
 func yellow(s string) string      { return cYellow + s + cReset }
+func magenta(s string) string     { return cMagenta + s + cReset }
+func blue(s string) string        { return cBlue + s + cReset }
+func bold(s string) string        { return cBold + s + cReset }
 func name(e engine.Engine) string { return e.Name() }
 func itoa(n int) string           { return fmt.Sprintf("%d", n) }
+
+// ── Dashboard compact (boîte unique) ───────────────────────
+//
+// dashW est la largeur EXTÉRIEURE totale de la boîte (bordures incluses),
+// choisie pour tenir dans un terminal Termux portrait étroit (~44-46
+// colonnes visibles avec la police par défaut) tout en restant lisible
+// en SSH/PC, où elle s'affiche simplement plus petite que la largeur du
+// terminal — jamais plus grande.
+const dashW = 44
+
+func dashTop() string    { return cyan("┌" + strings.Repeat("─", dashW-2) + "┐") }
+func dashMid() string    { return cyan("├" + strings.Repeat("─", dashW-2) + "┤") }
+func dashBottom() string { return cyan("└" + strings.Repeat("─", dashW-2) + "┘") }
+
+// dashLine encadre une ligne de contenu déjà mise en forme (couleurs
+// incluses) dans la boîte, en la complétant à la largeur intérieure —
+// le padding se base sur la longueur VISIBLE (visibleLen, dans
+// sysinfo.go), pas le nombre d'octets, pour ne jamais désaligner le
+// cadre à cause des séquences ANSI ou des émojis.
+func dashLine(content string) string {
+	inner := dashW - 4
+	pad := inner - visibleLen(content)
+	if pad < 0 {
+		pad = 0
+	}
+	return cyan("│ ") + content + strings.Repeat(" ", pad) + cyan(" │")
+}
+
+// dashTwoCol assemble deux cellules sur une même ligne de la boîte,
+// chacune complétée à la largeur (inner-1)/2 — utilisé pour les moteurs
+// et le menu, afin que la 2e colonne démarre toujours à la même
+// position quelle que soit la longueur du contenu de la 1ère.
+func dashTwoCol(left, right string) string {
+	inner := dashW - 4
+	colW := (inner - 1) / 2
+	l := left + strings.Repeat(" ", max0(colW-visibleLen(left)))
+	return dashLine(l + " " + right)
+}
+
+func max0(n int) int {
+	if n < 0 {
+		return 0
+	}
+	return n
+}
 
 func defaultInstallConfig() engine.InstallConfig {
 	return engine.InstallConfig{
