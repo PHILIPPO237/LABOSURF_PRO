@@ -502,10 +502,10 @@ download_asset() {
 }
 
 fetch_public_key() {
-  local url="${GITHUB_RELEASE}/license_pub.key"
+  local url="https://raw.githubusercontent.com/${GITHUB_REPO}/main/release/license_pub.key"
   local tmp="${PUBKEY_PATH}.new"
   curl -fL --retry 3 --connect-timeout 10 --proto '=https' --tlsv1.2 "$url" -o "$tmp" \
-    || { rm -f "$tmp"; die "Public key not found in the release. Publish a LABOSURF PRO release containing license_pub.key first."; }
+    || { rm -f "$tmp"; die "Public key not found in the repository (release/license_pub.key)."; }
   tr -d '[:space:]' < "$tmp" > "${tmp}.clean"
   mv "${tmp}.clean" "$tmp"
   # Une clé publique Ed25519 valide = exactement 64 caractères hexadécimaux.
