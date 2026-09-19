@@ -87,6 +87,8 @@ git commit -m "chore: update license public key"
 git push
 ```
 
+L'installateur (`labosurf-pro.sh`) télécharge la clé publique depuis `release/license_pub.key` sur la branche `main` (et non depuis les assets d'une release) : le `git push` ci-dessus suffit à mettre à jour les nouvelles installations, sans republier de release. Avant chaque changement de paire de clés, vérifier que `internal/license/license.go` (`EmbeddedVerifyKeyHex`) contient la même clé.
+
 ⚠️ **JAMAIS** commiter `labosurf_admin.key` (clé privée) — reste dans le dépôt Maker privé uniquement.
 
 ## Installation VPS (post-release)

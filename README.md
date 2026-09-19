@@ -214,7 +214,7 @@ Le code contient un CLI unifié (`labosurf engine list|status|start|stop|restart
 
 Le modèle de licence protège **l'accès au script d'installation**, pas l'exécution du serveur :
 
-- **Algorithme** : Ed25519 (clé publique embarquée dans les binaires + distribuée via `license_pub.key` dans chaque release)
+- **Algorithme** : Ed25519 (clé publique embarquée dans les binaires ; l'installateur la lit dans le dépôt : `release/license_pub.key` sur la branche `main`)
 - **Fenêtre de validité du jeton** : 3 heures après émission
 - **Usage** : 1 clé = 1 installation. Un reçu (`/etc/labosurf/.install_<id>.receipt`) empêche la réutilisation de la même clé
 - **Après installation** : le serveur démarre et tourne librement, **sans vérification de licence au runtime**
